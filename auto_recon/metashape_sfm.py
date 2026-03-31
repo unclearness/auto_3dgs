@@ -80,8 +80,13 @@ def _rotation_matrix_to_quaternion(R: np.ndarray) -> tuple[float, float, float, 
 # ---------------------------------------------------------------------------
 
 
-def _export_colmap_text(chunk: Metashape.Chunk, sparse_dir: Path) -> None:
-    """Write cameras.txt, images.txt, points3D.txt from chunk data."""
+def _export_colmap_text(
+    chunk: Metashape.Chunk, sparse_dir: Path,
+) -> tuple[np.ndarray, float]:
+    """Write cameras.txt, images.txt, points3D.txt from chunk data.
+
+    Returns (cam_centroid, filter_radius) used for outlier filtering.
+    """
     sparse_dir.mkdir(parents=True, exist_ok=True)
 
     # --- cameras.txt ---
@@ -139,7 +144,10 @@ def _export_colmap_text(chunk: Metashape.Chunk, sparse_dir: Path) -> None:
 
         cam_id = sensor_to_id.get(camera.sensor.key, 1)
 
-        # camera.transform is camera-to-chunk; invert for world-to-camera
+        # camera.transform is camera-to-world (Metashape convention).
+        # Metashape camera frame is OpenCV-compatible: X-right, Y-down, Z-forward.
+        # COLMAP also uses OpenCV convention, so no axis flip is needed.
+        # Simply invert to get world-to-camera.
         T_inv = camera.transform.inv()
         R = np.array([
             [T_inv[0, 0], T_inv[0, 1], T_inv[0, 2]],
@@ -182,11 +190,33 @@ def _export_colmap_text(chunk: Metashape.Chunk, sparse_dir: Path) -> None:
         "\n".join(img_lines) + "\n", encoding="utf-8"
     )
 
-    # --- points3D.txt ---
+    # --- Compute camera centroid and filter radius for outlier removal ---
+    cam_positions: list[np.ndarray] = []
+    for camera in chunk.cameras:
+        if camera.transform is None:
+            continue
+        T = camera.transform
+        R_c2w = np.array([[T[r, c] for c in range(3)] for r in range(3)])
+        t_c2w = np.array([T[0, 3], T[1, 3], T[2, 3]])
+        cam_positions.append(t_c2w)  # camera center in chunk coords
+
+    if cam_positions:
+        cam_arr = np.array(cam_positions)
+        cam_centroid = cam_arr.mean(axis=0)
+        cam_extent = np.linalg.norm(cam_arr.max(axis=0) - cam_arr.min(axis=0))
+        filter_radius = max(cam_extent * 2.0, 10.0)  # 2x camera extent, min 10
+    else:
+        cam_centroid = np.zeros(3)
+        filter_radius = float("inf")
+
+    # --- points3D.txt (with outlier filtering) ---
     p3d_lines: list[str] = [
         "# 3D point list with one line of data per point:",
         "# POINT3D_ID, X, Y, Z, R, G, B, ERROR, TRACK[] as (IMAGE_ID, POINT2D_IDX)",
     ]
+    n_filtered = 0
+    filtered_ids: set[int] = set()
+    tracks = tie_points.tracks if tie_points else None
     if tie_points:
         for i in range(len(tie_points.points)):
             pt = tie_points.points[i]
@@ -194,20 +224,34 @@ def _export_colmap_text(chunk: Metashape.Chunk, sparse_dir: Path) -> None:
                 continue
             p3d_id = point3d_id_map[i]
             coord = pt.coord
-            # Default color (white) and error
+            pos = np.array([coord.x, coord.y, coord.z])
+            dist = np.linalg.norm(pos - cam_centroid)
+            if dist > filter_radius:
+                n_filtered += 1
+                filtered_ids.add(p3d_id)
+                continue
+            # Get color from track
+            r, g, b = 200, 200, 200
+            if tracks and pt.track_id < len(tracks):
+                color = tracks[pt.track_id].color
+                r, g, b = int(color[0]), int(color[1]), int(color[2])
             p3d_lines.append(
                 f"{p3d_id} {coord.x:.6f} {coord.y:.6f} {coord.z:.6f} "
-                f"200 200 200 0.0"
+                f"{r} {g} {b} 0.0"
             )
 
     (sparse_dir / "points3D.txt").write_text(
         "\n".join(p3d_lines) + "\n", encoding="utf-8"
     )
 
+    n_kept = len(point3d_id_map) - n_filtered
     logger.info(
-        "Exported COLMAP text: %d cameras, %d images, %d points3D to %s",
-        len(chunk.sensors), img_id - 1, len(point3d_id_map), sparse_dir,
+        "Exported COLMAP text: %d cameras, %d images, %d points3D "
+        "(%d outliers filtered, radius=%.1f) to %s",
+        len(chunk.sensors), img_id - 1, n_kept,
+        n_filtered, filter_radius, sparse_dir,
     )
+    return cam_centroid, filter_radius
 
 
 # ---------------------------------------------------------------------------
@@ -215,18 +259,32 @@ def _export_colmap_text(chunk: Metashape.Chunk, sparse_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _export_point_cloud_ply(chunk: Metashape.Chunk, ply_path: Path) -> None:
-    """Write tie points as a PLY file."""
+def _export_point_cloud_ply(
+    chunk: Metashape.Chunk,
+    ply_path: Path,
+    cam_centroid: np.ndarray | None = None,
+    filter_radius: float = float("inf"),
+) -> None:
+    """Write tie points as a PLY file, filtering outliers."""
     tie_points = chunk.tie_points
     if not tie_points:
         logger.warning("No tie points to export")
         return
 
-    valid_points: list[tuple[float, float, float]] = []
+    tracks = tie_points.tracks
+    valid_points: list[tuple[float, float, float, int, int, int]] = []
     for i in range(len(tie_points.points)):
         pt = tie_points.points[i]
-        if pt.valid:
-            valid_points.append((pt.coord.x, pt.coord.y, pt.coord.z))
+        if not pt.valid:
+            continue
+        pos = np.array([pt.coord.x, pt.coord.y, pt.coord.z])
+        if cam_centroid is not None and np.linalg.norm(pos - cam_centroid) > filter_radius:
+            continue
+        r, g, b = 200, 200, 200
+        if tracks and pt.track_id < len(tracks):
+            color = tracks[pt.track_id].color
+            r, g, b = int(color[0]), int(color[1]), int(color[2])
+        valid_points.append((pt.coord.x, pt.coord.y, pt.coord.z, r, g, b))
 
     if not valid_points:
         logger.warning("No valid tie points to export")
@@ -241,11 +299,14 @@ def _export_point_cloud_ply(chunk: Metashape.Chunk, ply_path: Path) -> None:
         f.write("property float x\n")
         f.write("property float y\n")
         f.write("property float z\n")
+        f.write("property uchar red\n")
+        f.write("property uchar green\n")
+        f.write("property uchar blue\n")
         f.write("end_header\n")
-        for x, y, z in valid_points:
-            f.write(f"{x:.6f} {y:.6f} {z:.6f}\n")
+        for x, y, z, r, g, b in valid_points:
+            f.write(f"{x:.6f} {y:.6f} {z:.6f} {r} {g} {b}\n")
 
-    logger.info("Exported %d points to %s", len(valid_points), ply_path)
+    logger.info("Exported %d points (with color) to %s", len(valid_points), ply_path)
 
 
 # ---------------------------------------------------------------------------
@@ -336,11 +397,11 @@ def run_metashape_sfm(
         )
 
     # Export COLMAP text (direct memory access, no license)
-    _export_colmap_text(chunk, sparse_dir)
+    cam_centroid, filter_radius = _export_colmap_text(chunk, sparse_dir)
 
     # Export point cloud PLY (direct memory access, no license)
     point_cloud_path = output_dir / "point_cloud.ply"
-    _export_point_cloud_ply(chunk, point_cloud_path)
+    _export_point_cloud_ply(chunk, point_cloud_path, cam_centroid, filter_radius)
 
     now = datetime.datetime.now(tz=_JST).strftime("%Y%m%d_%H%M%S")
     logger.info("[%s] Metashape SfM complete", now)

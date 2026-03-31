@@ -230,8 +230,12 @@ def convert_equirect_to_perspectives(
                     [cv2.IMWRITE_JPEG_QUALITY, 95],
                 )
 
-                # Compute combined rotation for this sub-view
-                R_sub = _yaw_pitch_rotation(yaw, pitch)
+                # Compute combined world-to-camera rotation for this sub-view.
+                # The equirect extraction applies R_yaw @ R_pitch to map
+                # sub-view directions to equirect directions. The inverse
+                # (world-to-subview) is (R_yaw @ R_pitch)^T.
+                R_extract = _yaw_pitch_to_extract_matrix(yaw, pitch)
+                R_sub = R_extract.T  # world-to-subview in equirect camera frame
                 R_combined = R_sub @ R_orig
                 t_combined = R_sub @ t_orig
 
@@ -324,8 +328,13 @@ def _quat_to_rotation_matrix(
     ])
 
 
-def _yaw_pitch_rotation(yaw_deg: float, pitch_deg: float) -> np.ndarray:
-    """Create rotation matrix for yaw (around Y) then pitch (around X)."""
+def _yaw_pitch_to_extract_matrix(yaw_deg: float, pitch_deg: float) -> np.ndarray:
+    """Rotation that maps sub-view directions to equirect directions.
+
+    Matches the order used in ``_equirect_to_perspective``:
+    first pitch (around X), then yaw (around Y).
+    Result: R_yaw @ R_pitch.
+    """
     yaw = np.radians(yaw_deg)
     pitch = np.radians(pitch_deg)
 
@@ -344,7 +353,7 @@ def _yaw_pitch_rotation(yaw_deg: float, pitch_deg: float) -> np.ndarray:
         [0, sin_p, cos_p],
     ])
 
-    return R_pitch @ R_yaw
+    return R_yaw @ R_pitch
 
 
 def _rotation_matrix_to_quaternion(R: np.ndarray) -> tuple[float, float, float, float]:

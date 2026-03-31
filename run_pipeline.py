@@ -4,9 +4,13 @@
 Usage:
     python run_pipeline.py "./data/20260330/0330 (1).mp4" -o ./output/20260330
 
+    # Run only Stage 3 (reuse previous stages' output):
+    python run_pipeline.py "./data/20260330/0330 (1).mp4" -o ./output/20260330 --from-stage 3 --iterations 30000
+
 Pipeline stages:
     1. Preprocessing  - Frame extraction (ffmpeg) + nadir mask removal
     2. SfM            - Metashape (Spherical camera, COLMAP export)
+    2b. Perspective   - Equirectangular to pinhole image conversion
     3. 3DGS           - LichtFeld Studio (Gaussian Splatting training)
 """
 
@@ -15,6 +19,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import logging
+import shutil
 import sys
 from pathlib import Path
 
@@ -24,6 +29,14 @@ from auto_recon.equirect_to_perspective import convert_equirect_to_perspectives
 from auto_recon.lichtfeld_3dgs import run_lichtfeld_pipeline
 
 _JST = datetime.timezone(datetime.timedelta(hours=9))
+
+# Stage directory names (fixed convention)
+_STAGE_DIRS = {
+    1: "01_preprocessing",
+    2: "02_sfm",
+    "2b": "02b_perspective",
+    3: "03_3dgs",
+}
 
 
 def _setup_logging(output_dir: Path) -> logging.Logger:
@@ -56,12 +69,12 @@ def run_pipeline(
     blur_threshold: float = 100.0,
     mask_ratio: float = 0.18,
     inpaint: bool = False,
-    metashape_path: str | Path | None = None,
     lichtfeld_exe: str | Path | None = None,
     iterations: int = 30_000,
     strategy: str = "mcmc",
+    from_stage: int = 1,
 ) -> dict[str, Path]:
-    """Run the full 360° video to Gaussian Splatting pipeline.
+    """Run the 360° video to Gaussian Splatting pipeline.
 
     Parameters
     ----------
@@ -74,22 +87,17 @@ def run_pipeline(
     blur_threshold:
         Laplacian variance threshold for sharp frame selection.
     mask_ratio:
-        Nadir mask height ratio (0-1). Default 0.18 covers ~18% of bottom.
+        Nadir mask height ratio (0-1).
     inpaint:
         Use OpenCV inpainting instead of black fill for masked regions.
-    metashape_path:
-        Path to metashape.exe. Defaults to standard install location.
     lichtfeld_exe:
         Path to LichtFeld-Studio.exe. Defaults to bundled copy.
     iterations:
         Number of 3DGS training iterations.
     strategy:
         3DGS optimization strategy (mcmc, adc, igs+).
-
-    Returns
-    -------
-    dict[str, Path]
-        Keys: ``preprocessing_dir``, ``sfm_dir``, ``splat_dir``
+    from_stage:
+        Start from this stage (1, 2, or 3). Earlier stages' output is reused.
     """
     video_path = Path(video_path).resolve()
     output_dir = Path(output_dir).resolve()
@@ -100,73 +108,98 @@ def run_pipeline(
     logger.info("=" * 60)
     logger.info("Input:  %s", video_path)
     logger.info("Output: %s", output_dir)
+    if from_stage > 1:
+        logger.info("Resuming from stage %d (reusing earlier outputs)", from_stage)
+
+    preprocess_dir = output_dir / _STAGE_DIRS[1]
+    sfm_dir = output_dir / _STAGE_DIRS[2]
+    persp_dir = output_dir / _STAGE_DIRS["2b"]
+    splat_dir = output_dir / _STAGE_DIRS[3]
 
     # -- Stage 1: Preprocessing ------------------------------------------------
-    logger.info("-" * 40)
-    logger.info("Stage 1: Preprocessing (frame extraction + nadir mask)")
-    logger.info("-" * 40)
+    if from_stage <= 1:
+        logger.info("-" * 40)
+        logger.info("Stage 1: Preprocessing (frame extraction + nadir mask)")
+        logger.info("-" * 40)
 
-    preprocess_dir = output_dir / "01_preprocessing"
-    preprocess_result = preprocess_video(
-        video_path=video_path,
-        output_dir=preprocess_dir,
-        fps=fps,
-        blur_threshold=blur_threshold,
-        mask_ratio=mask_ratio,
-        inpaint=inpaint,
-    )
+        preprocess_result = preprocess_video(
+            video_path=video_path,
+            output_dir=preprocess_dir,
+            fps=fps,
+            blur_threshold=blur_threshold,
+            mask_ratio=mask_ratio,
+            inpaint=inpaint,
+        )
 
-    frames_dir = Path(preprocess_result["frames_dir"])
-    frame_count = preprocess_result["frame_count"]
-    logger.info("Stage 1 complete: %d frames extracted", frame_count)
+        frames_dir = Path(preprocess_result["frames_dir"])
+        frame_count = preprocess_result["frame_count"]
+        logger.info("Stage 1 complete: %d frames extracted", frame_count)
 
-    if frame_count == 0:
-        raise RuntimeError("No frames survived preprocessing. "
-                           "Try lowering --blur-threshold or --fps.")
+        if frame_count == 0:
+            raise RuntimeError("No frames survived preprocessing. "
+                               "Try lowering --blur-threshold or --fps.")
+    else:
+        frames_dir = preprocess_dir / "frames_masked"
+        if not frames_dir.is_dir():
+            raise FileNotFoundError(
+                f"Stage 1 output not found: {frames_dir}. "
+                "Run from stage 1 first."
+            )
+        logger.info("Stage 1: Reusing %s", frames_dir)
 
     # -- Stage 2: Metashape SfM ------------------------------------------------
-    logger.info("-" * 40)
-    logger.info("Stage 2: Metashape SfM (Spherical camera)")
-    logger.info("-" * 40)
+    if from_stage <= 2:
+        logger.info("-" * 40)
+        logger.info("Stage 2: Metashape SfM (Spherical camera)")
+        logger.info("-" * 40)
 
-    sfm_dir = output_dir / "02_sfm"
-    sfm_result = run_metashape_sfm(
-        image_dir=frames_dir,
-        output_dir=sfm_dir,
-    )
+        sfm_result = run_metashape_sfm(
+            image_dir=frames_dir,
+            output_dir=sfm_dir,
+        )
 
-    sfm_sparse_dir = sfm_result["sparse_dir"]
-    sfm_images_dir = sfm_result["images_dir"]
-    logger.info("Stage 2 complete: COLMAP sparse in %s", sfm_sparse_dir)
+        sfm_sparse_dir = sfm_result["sparse_dir"]
+        sfm_images_dir = sfm_result["images_dir"]
+        logger.info("Stage 2 complete: COLMAP sparse in %s", sfm_sparse_dir)
 
-    # -- Stage 2.5: Equirect to Perspective conversion -------------------------
-    logger.info("-" * 40)
-    logger.info("Stage 2.5: Equirectangular to Perspective conversion")
-    logger.info("-" * 40)
+        # -- Stage 2.5: Equirect to Perspective conversion ---------------------
+        logger.info("-" * 40)
+        logger.info("Stage 2.5: Equirectangular to Perspective conversion")
+        logger.info("-" * 40)
 
-    persp_dir = output_dir / "02b_perspective"
-    persp_result = convert_equirect_to_perspectives(
-        images_dir=sfm_images_dir,
-        colmap_sparse_dir=sfm_sparse_dir,
-        output_dir=persp_dir,
-        fov_deg=90.0,
-        out_size=(1024, 1024),
-        pitch_angles=[-30.0, 0.0, 30.0],
-        yaw_step_deg=90.0,
-    )
+        persp_result = convert_equirect_to_perspectives(
+            images_dir=sfm_images_dir,
+            colmap_sparse_dir=sfm_sparse_dir,
+            output_dir=persp_dir,
+            fov_deg=90.0,
+            out_size=(1024, 1024),
+            pitch_angles=[-30.0, 0.0, 30.0],
+            yaw_step_deg=90.0,
+        )
 
-    sparse_dir = persp_result["sparse_dir"]
-    images_dir = persp_result["images_dir"]
-    # Use SfM point cloud for initialization (lives in sfm output dir)
-    init_ply = sfm_result.get("point_cloud")
-    logger.info("Stage 2.5 complete: %s", persp_dir)
+        sparse_dir = persp_result["sparse_dir"]
+        images_dir = persp_result["images_dir"]
+        init_ply = sfm_result.get("point_cloud")
+        logger.info("Stage 2.5 complete: %s", persp_dir)
+    else:
+        sparse_dir = persp_dir / "sparse" / "0"
+        images_dir = persp_dir / "images"
+        init_ply = sfm_dir / "point_cloud.ply"
+        if not sparse_dir.is_dir():
+            raise FileNotFoundError(
+                f"Stage 2 output not found: {sparse_dir}. "
+                "Run from stage 2 first."
+            )
+        logger.info("Stage 2/2.5: Reusing %s", persp_dir)
 
     # -- Stage 3: LichtFeld Studio 3DGS ---------------------------------------
     logger.info("-" * 40)
-    logger.info("Stage 3: LichtFeld Studio 3DGS training")
+    logger.info("Stage 3: LichtFeld Studio 3DGS training (%d iterations)", iterations)
     logger.info("-" * 40)
 
-    splat_dir = output_dir / "03_3dgs"
+    # Clean previous 3DGS output if re-running
+    if splat_dir.exists():
+        shutil.rmtree(splat_dir)
 
     run_lichtfeld_pipeline(
         colmap_sparse_dir=sparse_dir,
@@ -212,15 +245,15 @@ def main() -> None:
                         help="Nadir mask height ratio 0-1 (default: 0.18)")
     parser.add_argument("--inpaint", action="store_true",
                         help="Inpaint masked region instead of black fill")
-    parser.add_argument("--metashape", type=str, default=None,
-                        help="Path to metashape.exe")
     parser.add_argument("--lichtfeld", type=str, default=None,
                         help="Path to LichtFeld-Studio.exe")
     parser.add_argument("--iterations", type=int, default=30_000,
                         help="3DGS training iterations (default: 30000)")
-    parser.add_argument("--strategy", type=str, default="mcmc",
+    parser.add_argument("--strategy", type=str, default="igs+",
                         choices=["mcmc", "adc", "igs+"],
-                        help="3DGS optimization strategy (default: mcmc)")
+                        help="3DGS optimization strategy (default: igs+)")
+    parser.add_argument("--from-stage", type=int, default=1, choices=[1, 2, 3],
+                        help="Start from this stage, reusing earlier outputs (default: 1)")
 
     args = parser.parse_args()
 
@@ -231,10 +264,10 @@ def main() -> None:
         blur_threshold=args.blur_threshold,
         mask_ratio=args.mask_ratio,
         inpaint=args.inpaint,
-        metashape_path=args.metashape,
         lichtfeld_exe=args.lichtfeld,
         iterations=args.iterations,
         strategy=args.strategy,
+        from_stage=args.from_stage,
     )
 
     print(f"\nDone! Output in: {result['splat_dir']}")
