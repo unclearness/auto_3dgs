@@ -275,6 +275,9 @@ def preprocess_video(
     blur_threshold: float = 100.0,
     mask_ratio: float = 0.18,
     inpaint: bool = False,
+    sam3_mode: str | None = None,
+    sam3_confidence: float = 0.3,
+    sam3_prompt: str = "person",
 ) -> dict[str, str | Path]:
     """Run the full preprocessing pipeline on a 360° video.
 
@@ -282,7 +285,19 @@ def preprocess_video(
         1. Extract frames at *fps*
         2. Select sharp frames (discard blurry ones)
         3. Generate nadir mask
-        4. Apply mask to selected frames
+        4. (Optional) SAM3 person detection masks
+        5. Apply combined masks to selected frames
+
+    Parameters
+    ----------
+    sam3_mode:
+        SAM3 person masking mode. ``None`` to disable, ``"equirect"`` to run
+        SAM3 directly on equirectangular images, ``"pinhole"`` to extract
+        perspective views first.
+    sam3_confidence:
+        SAM3 detection confidence threshold (0-1).
+    sam3_prompt:
+        Text prompt for SAM3 (default: "person").
 
     Returns a dict with keys:
         - ``frames_dir``: directory containing the final processed frames
@@ -314,8 +329,40 @@ def preprocess_video(
     mask_path = output_dir / "nadir_mask.jpg"
     mask = generate_nadir_mask(w, h, mask_ratio=mask_ratio, output_path=mask_path, logger=logger)
 
-    # 4. Apply mask
-    processed = apply_mask(sharp_frames, mask, masked_dir, inpaint=inpaint, logger=logger)
+    # 4. SAM3 person masking (optional)
+    if sam3_mode is not None:
+        from auto_recon.sam3_masking import (
+            mask_persons_equirect,
+            mask_persons_pinhole,
+            apply_combined_masks,
+        )
+
+        sam3_mask_dir = output_dir / "sam3_masks"
+        logger.info("SAM3 person masking: mode=%s, prompt=%r, confidence=%.2f",
+                     sam3_mode, sam3_prompt, sam3_confidence)
+
+        if sam3_mode == "equirect":
+            mask_persons_equirect(
+                sharp_frames, sam3_mask_dir,
+                prompt=sam3_prompt, confidence=sam3_confidence,
+            )
+        elif sam3_mode == "pinhole":
+            mask_persons_pinhole(
+                sharp_frames, sam3_mask_dir,
+                prompt=sam3_prompt, confidence=sam3_confidence,
+            )
+        else:
+            raise ValueError(f"Unknown sam3_mode: {sam3_mode!r}. Use 'equirect' or 'pinhole'.")
+
+        # 5. Apply combined masks (SAM3 + nadir)
+        processed = apply_combined_masks(
+            sharp_frames, sam3_mask_dir, mask, masked_dir,
+            inpaint=inpaint,
+        )
+        logger.info("SAM3 + nadir masks applied to %d frames", len(processed))
+    else:
+        # 5. Apply nadir mask only
+        processed = apply_mask(sharp_frames, mask, masked_dir, inpaint=inpaint, logger=logger)
 
     logger.info(
         "=== Preprocessing complete: %d frames ready in %s ===",

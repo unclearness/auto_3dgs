@@ -84,6 +84,9 @@ def run_pipeline(
     strategy: str = "mcmc",
     from_stage: int = 1,
     sfm_backend: str = "metashape",
+    sam3_mode: str | None = None,
+    sam3_confidence: float = 0.3,
+    sam3_prompt: str = "person",
 ) -> dict[str, Path]:
     """Run the 360° video to Gaussian Splatting pipeline.
 
@@ -153,6 +156,9 @@ def run_pipeline(
             blur_threshold=blur_threshold,
             mask_ratio=mask_ratio,
             inpaint=inpaint,
+            sam3_mode=sam3_mode,
+            sam3_confidence=sam3_confidence,
+            sam3_prompt=sam3_prompt,
         )
 
         frames_dir = Path(preprocess_result["frames_dir"])
@@ -330,6 +336,13 @@ def main() -> None:
     parser.add_argument("--sfm-backend", type=str, default="metashape",
                         choices=["metashape", "colmap", "realityscan"],
                         help="SfM backend to use (default: metashape)")
+    parser.add_argument("--sam3", type=str, default="pinhole",
+                        choices=["equirect", "pinhole", "off"],
+                        help="SAM3 person masking mode (default: pinhole, off to disable)")
+    parser.add_argument("--sam3-confidence", type=float, default=0.3,
+                        help="SAM3 confidence threshold (default: 0.3)")
+    parser.add_argument("--sam3-prompt", type=str, default="person",
+                        help="SAM3 text prompt (default: person)")
 
     args = parser.parse_args()
 
@@ -345,6 +358,9 @@ def main() -> None:
         strategy=args.strategy,
         from_stage=args.from_stage,
         sfm_backend=args.sfm_backend,
+        sam3_mode=args.sam3 if args.sam3 != "off" else None,
+        sam3_confidence=args.sam3_confidence,
+        sam3_prompt=args.sam3_prompt,
     )
 
     print(f"\nDone! Output in: {result['splat_dir']}")
