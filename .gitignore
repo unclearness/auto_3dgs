@@ -4,6 +4,8 @@ __pycache__/
 output/
 data/
 LichtFeld-Studio_Windows_v0.5.0/
+LichtFeld-Studio/build/
+vcpkg/
 *.log
 *.psx
 *.files/
