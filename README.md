@@ -116,7 +116,7 @@ uv run python run_pipeline.py "data/20260330/0330 (1).mp4" -o ./output/20260330
 
 ### おすすめ構成 (Metashape)
 
-Metashape は equirectangular 画像を Spherical カメラとして直接扱えるため、最も高精度な SfM 結果が得られます。Metashape のライセンス (商用) が必要です。
+Metashape は equirectangular 画像を Spherical カメラとして直接扱えるため、最も高精度な SfM 結果が得られます。Metashape のライセンス (Standard / Professional どちらでも可) が必要です。
 
 ```bash
 uv run python run_pipeline.py "video.mp4" -o ./output \
@@ -171,4 +171,4 @@ output/
 ## ライセンス
 
 - [LichtFeld Studio](https://github.com/MrNeRF/LichtFeld-Studio) — GPL-3.0
-- [Agisoft Metashape](https://www.agisoft.com/) — 商用ライセンス (別途必要)
+- [Agisoft Metashape](https://www.agisoft.com/) — 商用ライセンス (Standard / Professional どちらでも可)
