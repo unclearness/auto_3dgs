@@ -279,6 +279,7 @@ def preprocess_video(
     sam3_confidence: float = 0.3,
     sam3_prompt: str = "person",
     sam3_batch_size: int = 4,
+    sam3_scale: float = 1.0,
 ) -> dict[str, str | Path]:
     """Run the full preprocessing pipeline on a 360° video.
 
@@ -362,12 +363,14 @@ def preprocess_video(
             mask_persons_equirect(
                 sharp_frames, sam3_mask_dir,
                 prompt=sam3_prompt, confidence=sam3_confidence,
+                scale=sam3_scale,
             )
         elif sam3_mode == "pinhole":
             mask_persons_pinhole(
                 sharp_frames, sam3_mask_dir,
                 prompt=sam3_prompt, confidence=sam3_confidence,
                 batch_size=sam3_batch_size,
+                scale=sam3_scale,
             )
         else:
             raise ValueError(f"Unknown sam3_mode: {sam3_mode!r}. Use 'equirect' or 'pinhole'.")

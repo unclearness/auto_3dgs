@@ -88,6 +88,7 @@ def run_pipeline(
     sam3_confidence: float = 0.3,
     sam3_prompt: str = "person",
     sam3_batch_size: int = 4,
+    sam3_scale: float = 1.0,
 ) -> dict[str, Path]:
     """Run the 360° video to Gaussian Splatting pipeline.
 
@@ -161,6 +162,7 @@ def run_pipeline(
             sam3_confidence=sam3_confidence,
             sam3_prompt=sam3_prompt,
             sam3_batch_size=sam3_batch_size,
+            sam3_scale=sam3_scale,
         )
 
         frames_dir = Path(preprocess_result["frames_dir"])
@@ -363,6 +365,8 @@ def main() -> None:
                         help="SAM3 text prompt (default: person)")
     parser.add_argument("--sam3-batch", type=int, default=4,
                         help="SAM3 batch size for pinhole mode (default: 4)")
+    parser.add_argument("--sam3-scale", type=float, default=1.0,
+                        help="SAM3 input scale factor, e.g. 0.5 = half resolution (default: 1.0)")
 
     args = parser.parse_args()
 
@@ -382,6 +386,7 @@ def main() -> None:
         sam3_confidence=args.sam3_confidence,
         sam3_prompt=args.sam3_prompt,
         sam3_batch_size=args.sam3_batch,
+        sam3_scale=args.sam3_scale,
     )
 
     print(f"\nDone! Output in: {result['splat_dir']}")

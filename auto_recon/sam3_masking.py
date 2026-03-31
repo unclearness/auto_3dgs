@@ -65,13 +65,25 @@ def _segment_persons(
     image: np.ndarray,
     processor,
     prompt: str = "person",
+    scale: float = 1.0,
 ) -> np.ndarray:
     """Run SAM3 text-prompted segmentation on a single image.
+
+    Parameters
+    ----------
+    scale:
+        Downscale factor for SAM3 input (0.5 = half resolution).
+        The output mask is upscaled back to the original size.
 
     Returns binary mask (H, W) uint8 -- 255 where person detected.
     """
     h, w = image.shape[:2]
-    pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    if scale < 1.0:
+        small = cv2.resize(image, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+    else:
+        small = image
+
+    pil_image = Image.fromarray(cv2.cvtColor(small, cv2.COLOR_BGR2RGB))
     with torch.amp.autocast("cuda", dtype=torch.bfloat16):
         state = processor.set_image(pil_image)
         output = processor.set_text_prompt(state=state, prompt=prompt)
@@ -81,6 +93,10 @@ def _segment_persons(
         return np.zeros((h, w), dtype=np.uint8)
 
     combined = masks.any(dim=0)[0].cpu().numpy().astype(np.uint8) * 255
+
+    # Upscale mask back to original size if downscaled
+    if scale < 1.0:
+        combined = cv2.resize(combined, (w, h), interpolation=cv2.INTER_NEAREST)
     return combined
 
 
@@ -88,6 +104,7 @@ def _segment_persons_batch(
     images: list[np.ndarray],
     processor,
     prompt: str = "person",
+    scale: float = 1.0,
 ) -> list[np.ndarray]:
     """Run SAM3 on a batch of same-size images.
 
@@ -99,6 +116,11 @@ def _segment_persons_batch(
     """
     if not images:
         return []
+
+    orig_sizes = [(img.shape[0], img.shape[1]) for img in images]
+    if scale < 1.0:
+        images = [cv2.resize(img, (int(img.shape[1] * scale), int(img.shape[0] * scale)),
+                              interpolation=cv2.INTER_AREA) for img in images]
 
     pil_images = [Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB)) for img in images]
     sizes = [(img.shape[0], img.shape[1]) for img in images]
@@ -137,10 +159,13 @@ def _segment_persons_batch(
             output = processor.set_text_prompt(state=per_image_state, prompt=prompt)
 
         masks = output["masks"]
+        oh, ow = orig_sizes[i]
         if masks.shape[0] == 0:
-            results.append(np.zeros((h, w), dtype=np.uint8))
+            results.append(np.zeros((oh, ow), dtype=np.uint8))
         else:
             combined = masks.any(dim=0)[0].cpu().numpy().astype(np.uint8) * 255
+            if scale < 1.0:
+                combined = cv2.resize(combined, (ow, oh), interpolation=cv2.INTER_NEAREST)
             results.append(combined)
 
     return results
@@ -268,6 +293,7 @@ def mask_persons_equirect(
     prompt: str = "person",
     confidence: float = 0.3,
     dilate_px: int = 15,
+    scale: float = 1.0,
 ) -> list[Path]:
     """Run SAM3 directly on equirectangular images.
 
@@ -299,7 +325,7 @@ def mask_persons_equirect(
             logger.warning("Cannot read %s, skipping", img_path)
             continue
 
-        person_mask = _segment_persons(img, processor, prompt)
+        person_mask = _segment_persons(img, processor, prompt, scale=scale)
 
         # Dilate to add safety margin
         if dilate_px > 0 and person_mask.any():
@@ -342,6 +368,7 @@ def mask_persons_pinhole(
     yaw_step_deg: float = 90.0,
     dilate_px: int = 15,
     batch_size: int = 4,
+    scale: float = 1.0,
 ) -> list[Path]:
     """Run SAM3 on perspective views extracted from equirectangular images.
 
@@ -409,7 +436,7 @@ def mask_persons_pinhole(
         persp_masks: list[np.ndarray] = []
         for b_start in range(0, n_views, batch_size):
             batch = persp_images[b_start : b_start + batch_size]
-            batch_masks = _segment_persons_batch(batch, processor, prompt)
+            batch_masks = _segment_persons_batch(batch, processor, prompt, scale=scale)
             persp_masks.extend(batch_masks)
 
         # Project masks back to equirect
