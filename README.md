@@ -32,7 +32,11 @@ Fully automated pipeline for generating 3D Gaussian Splatting from 360° video.
 | CUDA Toolkit | 12.8+ | 12.8+ |
 | NVIDIA GPU | Required | Required |
 | Metashape | Standard Edition | Python wheel (auto-installed) |
+| COLMAP | [Pre-built binary](https://colmap.github.io/install.html#pre-built-binaries) | [Build from source](https://colmap.github.io/install.html#build-from-source) |
+| RealityScan | [Official installer](https://www.capturingreality.com/realityscan) | [Official installer](https://www.capturingreality.com/realityscan) |
 | LichtFeld Studio | Pre-built binary | Build from source |
+
+> **SfM backends**: Only the backend you choose (`--sfm-backend`) needs to be installed. Metashape is recommended; COLMAP is the fully open-source alternative.
 
 ## Setup
 
@@ -49,7 +53,9 @@ cd auto_3dgs
 
 1. Install [Agisoft Metashape](https://www.agisoft.com/) Standard Edition
 2. Place [LichtFeld Studio v0.5.0](https://lichtfeld-studio.com/) pre-built binary in `LichtFeld-Studio_Windows_v0.5.0/`
-3. Install Python dependencies:
+3. *(If using COLMAP)* Download [COLMAP pre-built binary](https://colmap.github.io/install.html#pre-built-binaries) and add to PATH
+4. *(If using RealityScan)* Install via [official installer](https://www.capturingreality.com/realityscan)
+5. Install Python dependencies:
 
 ```bash
 pip install uv
@@ -65,7 +71,12 @@ pip install uv
 uv sync
 ```
 
-#### 2. Build LichtFeld Studio
+#### 2. Install SfM backend (if not using Metashape)
+
+- **COLMAP**: [Build from source](https://colmap.github.io/install.html#build-from-source) following the official instructions
+- **RealityScan**: Install via [official installer](https://www.capturingreality.com/realityscan)
+
+#### 3. Build LichtFeld Studio
 
 The build script handles everything:
 
