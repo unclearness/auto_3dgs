@@ -3,14 +3,41 @@ name = "auto-recon"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
 dependencies = [
     "metashape",
-    "numpy>=2.4.4",
-    "opencv-python>=4.13.0.92",
+    "opencv-python>=4.11.0.86",
+    "sam3",
     "pillow>=12.1.1",
     "pymupdf>=1.27.2.2",
+    "torch>=2.10.0",
+    "torchvision>=0.25.0",
+    "xformers>=0.0.35"
 ]
+
+[tool.uv]
+environments = [
+    "sys_platform == 'win32' and platform_machine == 'AMD64'",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = " https://download.pytorch.org/whl/cu130"
+explicit = true
+
 
 [tool.uv.sources]
 metashape = { url = "https://download.agisoft.com/metashape-2.3.0-cp39.cp310.cp311.cp312.cp313-none-win_amd64.whl" }
+sam3 = { workspace = true, editable = true }
+torch = [
+  { index = "pytorch-cu130", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchvision = [
+  { index = "pytorch-cu130", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+
+[tool.uv.workspace]
+members = [
+    "sam3",
+]
+
