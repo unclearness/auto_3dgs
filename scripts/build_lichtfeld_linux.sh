@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# LichtFeld-Studio Linux ビルドスクリプト
-# 前提: Ubuntu 24.04, NVIDIA GPU, CUDA Toolkit 12.8+
+# LichtFeld-Studio Linux build script
+# Prerequisites: Ubuntu 24.04, NVIDIA GPU, CUDA Toolkit 12.8+
 #
-# 使い方:
+# Usage:
 #   chmod +x scripts/build_lichtfeld_linux.sh
 #   ./scripts/build_lichtfeld_linux.sh
 #
-# CUDA パスを指定する場合:
+# To specify a custom CUDA path:
 #   CUDA_ROOT=/usr/local/cuda-13.0 ./scripts/build_lichtfeld_linux.sh
 
 set -euo pipefail
@@ -17,10 +17,10 @@ LICHTFELD_DIR="$PROJECT_ROOT/LichtFeld-Studio"
 VCPKG_DIR="$PROJECT_ROOT/vcpkg"
 
 # --------------------------------------------------------------------------
-# 1. システム依存パッケージ (要 sudo)
+# 1. System dependencies (requires sudo)
 # --------------------------------------------------------------------------
 install_system_deps() {
-    echo "=== システム依存パッケージのインストール ==="
+    echo "=== Installing system dependencies ==="
     sudo apt-get update
     sudo apt-get install -y \
         gcc-14 g++-14 gfortran-14 \
@@ -38,7 +38,7 @@ install_system_deps() {
 }
 
 # --------------------------------------------------------------------------
-# 2. CMake 4.x インストール (3.30+ 必須)
+# 2. CMake 4.x installation (3.30+ required)
 # --------------------------------------------------------------------------
 install_cmake() {
     local required_major=3
@@ -51,12 +51,12 @@ install_cmake() {
         major=$(echo "$ver" | cut -d. -f1)
         minor=$(echo "$ver" | cut -d. -f2)
         if (( major > required_major || (major == required_major && minor >= required_minor) )); then
-            echo "=== CMake $ver は要件を満たしています。スキップ ==="
+            echo "=== CMake $ver meets requirements. Skipping ==="
             return
         fi
     fi
 
-    echo "=== CMake 4.0.3 のインストール ==="
+    echo "=== Installing CMake 4.0.3 ==="
     local arch
     arch=$(uname -m)
     local tmp
@@ -66,17 +66,17 @@ install_cmake() {
     chmod +x "$tmp/cmake.sh"
     sudo "$tmp/cmake.sh" --skip-license --prefix=/usr/local
     rm -rf "$tmp"
-    echo "CMake $(cmake --version | head -1) インストール完了"
+    echo "CMake $(cmake --version | head -1) installed"
 }
 
 # --------------------------------------------------------------------------
-# 3. vcpkg セットアップ
+# 3. vcpkg setup
 # --------------------------------------------------------------------------
 setup_vcpkg() {
     if [ -x "$VCPKG_DIR/vcpkg" ]; then
-        echo "=== vcpkg は既にセットアップ済み。スキップ ==="
+        echo "=== vcpkg already set up. Skipping ==="
     else
-        echo "=== vcpkg のクローンとブートストラップ ==="
+        echo "=== Cloning and bootstrapping vcpkg ==="
         git clone https://github.com/microsoft/vcpkg.git "$VCPKG_DIR"
         "$VCPKG_DIR/bootstrap-vcpkg.sh" -disableMetrics
     fi
@@ -84,15 +84,15 @@ setup_vcpkg() {
 }
 
 # --------------------------------------------------------------------------
-# 4. CUDA パスの検出
+# 4. CUDA detection
 # --------------------------------------------------------------------------
 detect_cuda() {
     if [ -n "${CUDA_ROOT:-}" ] && [ -x "$CUDA_ROOT/bin/nvcc" ]; then
-        echo "=== CUDA_ROOT から使用: $CUDA_ROOT ==="
+        echo "=== Using CUDA from CUDA_ROOT: $CUDA_ROOT ==="
         return
     fi
 
-    # /usr/local/cuda-* から最新バージョンを検出
+    # Find the latest version under /usr/local/cuda-*
     local latest=""
     for d in /usr/local/cuda-*/bin/nvcc; do
         [ -x "$d" ] && latest="$(dirname "$(dirname "$d")")"
@@ -100,33 +100,33 @@ detect_cuda() {
 
     if [ -n "$latest" ]; then
         CUDA_ROOT="$latest"
-        echo "=== 自動検出 CUDA: $CUDA_ROOT ==="
+        echo "=== Auto-detected CUDA: $CUDA_ROOT ==="
     elif [ -x /usr/local/cuda/bin/nvcc ]; then
         CUDA_ROOT="/usr/local/cuda"
-        echo "=== デフォルト CUDA: $CUDA_ROOT ==="
+        echo "=== Default CUDA: $CUDA_ROOT ==="
     else
-        echo "エラー: CUDA Toolkit が見つかりません。CUDA_ROOT を設定してください。" >&2
+        echo "Error: CUDA Toolkit not found. Please set CUDA_ROOT." >&2
         exit 1
     fi
 
-    # バージョンチェック (12.8+ 必須)
+    # Version check (12.8+ required)
     local cuda_ver
     cuda_ver=$("$CUDA_ROOT/bin/nvcc" --version | grep -oP 'release \K[0-9]+\.[0-9]+')
     local cuda_major cuda_minor
     cuda_major=$(echo "$cuda_ver" | cut -d. -f1)
     cuda_minor=$(echo "$cuda_ver" | cut -d. -f2)
     if (( cuda_major < 12 || (cuda_major == 12 && cuda_minor < 8) )); then
-        echo "エラー: CUDA $cuda_ver が検出されましたが、12.8+ が必要です。" >&2
+        echo "Error: CUDA $cuda_ver detected, but 12.8+ is required." >&2
         exit 1
     fi
     echo "=== CUDA $cuda_ver ($CUDA_ROOT) ==="
 }
 
 # --------------------------------------------------------------------------
-# 5. LichtFeld-Studio サブモジュール初期化 & ビルド
+# 5. LichtFeld-Studio submodule init & build
 # --------------------------------------------------------------------------
 build_lichtfeld() {
-    echo "=== サブモジュールの初期化 ==="
+    echo "=== Initializing submodules ==="
     cd "$PROJECT_ROOT"
     git submodule update --init --recursive
 
@@ -139,19 +139,19 @@ build_lichtfeld() {
         -DCMAKE_CUDA_COMPILER="$CUDA_ROOT/bin/nvcc" \
         -DCUDAToolkit_ROOT="$CUDA_ROOT"
 
-    echo "=== ビルド ($(nproc) コア) ==="
+    echo "=== Building ($(nproc) cores) ==="
     cmake --build build -- -j"$(nproc)"
 
-    echo "=== ビルド完了 ==="
+    echo "=== Build complete ==="
     "$LICHTFELD_DIR/build/LichtFeld-Studio" --version
 }
 
 # --------------------------------------------------------------------------
-# メイン
+# Main
 # --------------------------------------------------------------------------
 main() {
     echo "============================================"
-    echo " LichtFeld-Studio Linux ビルド"
+    echo " LichtFeld-Studio Linux Build"
     echo "============================================"
 
     install_system_deps
@@ -162,8 +162,8 @@ main() {
 
     echo ""
     echo "============================================"
-    echo " 完了!"
-    echo " バイナリ: $LICHTFELD_DIR/build/LichtFeld-Studio"
+    echo " Done!"
+    echo " Binary: $LICHTFELD_DIR/build/LichtFeld-Studio"
     echo "============================================"
 }
 

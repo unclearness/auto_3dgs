@@ -1,55 +1,55 @@
 # auto_3dgs
 
-360° 動画から 3D Gaussian Splatting を全自動で生成するパイプライン。
+Fully automated pipeline for generating 3D Gaussian Splatting from 360° video.
 
-## パイプライン概要
+## Pipeline Overview
 
 ```
-360° 動画 (.mp4)
+360° Video (.mp4)
   │
-  ├─ Stage 1: 前処理
-  │    ├─ フレーム切り出し (ffmpeg, 指定FPS)
-  │    ├─ ブレ検出・除去 (Laplacian variance)
-  │    ├─ 底面マスク (撮影者除去)
-  │    └─ SAM3 人物マスキング (オプション)
+  ├─ Stage 1: Preprocessing
+  │    ├─ Frame extraction (ffmpeg, configurable FPS)
+  │    ├─ Blur detection & rejection (Laplacian variance)
+  │    ├─ Nadir mask (remove photographer from bottom)
+  │    └─ SAM3 person masking (optional)
   │
   ├─ Stage 2: SfM (Structure from Motion)
-  │    ├─ Metashape (推奨 / Spherical カメラ対応)
+  │    ├─ Metashape (recommended / native Spherical camera support)
   │    ├─ COLMAP
   │    └─ RealityScan
   │
-  ├─ Stage 2.5: Equirectangular → Perspective 変換
+  ├─ Stage 2.5: Equirectangular → Perspective conversion
   │
   └─ Stage 3: 3D Gaussian Splatting
        └─ LichtFeld Studio (IGS+ / MCMC / ADC)
 ```
 
-## 動作環境
+## Requirements
 
-| 要件 | Windows | Linux (Ubuntu 24.04) |
+| | Windows | Linux (Ubuntu 24.04) |
 |------|---------|---------------------|
 | Python | 3.12+ | 3.12+ |
 | CUDA Toolkit | 12.8+ | 12.8+ |
-| NVIDIA GPU | 必須 | 必須 |
-| Metashape | Standard Edition | Python wheel (自動インストール) |
-| LichtFeld Studio | プリビルドバイナリ | ソースからビルド |
+| NVIDIA GPU | Required | Required |
+| Metashape | Standard Edition | Python wheel (auto-installed) |
+| LichtFeld Studio | Pre-built binary | Build from source |
 
-## セットアップ
+## Setup
 
-### 共通手順
+### Common
 
 ```bash
 git clone --recursive https://github.com/<your-repo>/auto_3dgs.git
 cd auto_3dgs
 ```
 
-> `--recursive` を忘れた場合: `git submodule update --init --recursive`
+> If you forgot `--recursive`: `git submodule update --init --recursive`
 
 ### Windows
 
-1. [Agisoft Metashape](https://www.agisoft.com/) Standard Edition をインストール
-2. [LichtFeld Studio v0.5.0](https://lichtfeld-studio.com/) プリビルドバイナリを `LichtFeld-Studio_Windows_v0.5.0/` に配置
-3. Python 依存のインストール:
+1. Install [Agisoft Metashape](https://www.agisoft.com/) Standard Edition
+2. Place [LichtFeld Studio v0.5.0](https://lichtfeld-studio.com/) pre-built binary in `LichtFeld-Studio_Windows_v0.5.0/`
+3. Install Python dependencies:
 
 ```bash
 pip install uv
@@ -58,117 +58,117 @@ uv sync
 
 ### Linux (Ubuntu 24.04)
 
-#### 1. Python 依存のインストール
+#### 1. Install Python dependencies
 
 ```bash
 pip install uv
 uv sync
 ```
 
-#### 2. LichtFeld Studio のビルド
+#### 2. Build LichtFeld Studio
 
-ビルドスクリプトが一括で実行します:
+The build script handles everything:
 
 ```bash
 chmod +x scripts/build_lichtfeld_linux.sh
 ./scripts/build_lichtfeld_linux.sh
 ```
 
-スクリプトが行う処理:
+What the script does:
 
-1. **GCC 14** のインストールと設定 (`sudo` 必要)
-2. **CMake 4.x** のインストール (3.30+ 必須)
-3. **vcpkg** のクローンとブートストラップ
-4. **CUDA Toolkit** の自動検出 (12.8+ 必須)
-5. **LichtFeld Studio** の CMake configure & ビルド
+1. Install **GCC 14** and configure alternatives (`sudo` required)
+2. Install **CMake 4.x** (3.30+ required)
+3. Clone and bootstrap **vcpkg**
+4. Auto-detect **CUDA Toolkit** (12.8+ required)
+5. CMake configure & build **LichtFeld Studio**
 
-CUDA パスを明示指定する場合:
+To specify a custom CUDA path:
 
 ```bash
 CUDA_ROOT=/usr/local/cuda-13.0 ./scripts/build_lichtfeld_linux.sh
 ```
 
-ビルド成功後、バイナリは `LichtFeld-Studio/build/LichtFeld-Studio` に生成されます。パイプラインは Linux 上では自動的にこのパスを参照します。
+After a successful build, the binary is located at `LichtFeld-Studio/build/LichtFeld-Studio`. The pipeline automatically uses this path on Linux.
 
-> **注意**: 初回ビルドでは vcpkg による依存ライブラリのビルドに 20〜30 分かかります。
+> **Note**: The first build takes 20–30 minutes due to vcpkg dependency compilation.
 
-## 使い方
+## Usage
 
-### 基本
+### Basic
 
 ```bash
 uv run python run_pipeline.py "data/20260330/0330 (1).mp4" -o ./output/20260330
 ```
 
-### 主要オプション
+### Options
 
-| オプション | デフォルト | 説明 |
-|-----------|----------|------|
-| `--fps` | `1.0` | フレーム抽出レート (fps) |
-| `--sfm-backend` | `metashape` | SfM バックエンド (`metashape` / `colmap` / `realityscan`) |
-| `--iterations` | `30000` | 3DGS トレーニングイテレーション数 |
-| `--strategy` | `igs+` | 3DGS 最適化戦略 (`igs+` / `mcmc` / `adc`) |
-| `--sam3` | `pinhole` | SAM3 人物マスキング (`pinhole` / `equirect` / `off`) |
-| `--from-stage` | `1` | 指定ステージから再開 (`1` / `2` / `3`) |
-| `--mask-ratio` | `0.18` | 底面マスク高さ比率 (0〜1) |
-| `--blur-threshold` | `100.0` | ブレ検出閾値 (Laplacian variance) |
-| `--lichtfeld` | 自動検出 | LichtFeld Studio バイナリのパス |
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--fps` | `1.0` | Frame extraction rate (fps) |
+| `--sfm-backend` | `metashape` | SfM backend (`metashape` / `colmap` / `realityscan`) |
+| `--iterations` | `30000` | 3DGS training iterations |
+| `--strategy` | `igs+` | 3DGS optimization strategy (`igs+` / `mcmc` / `adc`) |
+| `--sam3` | `pinhole` | SAM3 person masking (`pinhole` / `equirect` / `off`) |
+| `--from-stage` | `1` | Resume from stage (`1` / `2` / `3`) |
+| `--mask-ratio` | `0.18` | Nadir mask height ratio (0–1) |
+| `--blur-threshold` | `100.0` | Blur detection threshold (Laplacian variance) |
+| `--lichtfeld` | Auto-detect | Path to LichtFeld Studio binary |
 
-### おすすめ構成 (Metashape)
+### Recommended Setup (Metashape)
 
-Metashape は equirectangular 画像を Spherical カメラとして直接扱えるため、最も高精度な SfM 結果が得られます。Metashape のライセンス (Standard / Professional どちらでも可) が必要です。
+Metashape natively supports equirectangular images as Spherical cameras, producing the most accurate SfM results. Requires a Metashape license (Standard or Professional, either works).
 
 ```bash
 uv run python run_pipeline.py "video.mp4" -o ./output \
     --sfm-backend metashape --sam3 pinhole --strategy igs+
 ```
 
-### 完全オープンソース構成 (COLMAP)
+### Fully Open-Source Setup (COLMAP)
 
-商用ライセンス不要で動作する構成です。COLMAP は equirectangular を直接扱えないため、内部で Perspective 変換してから SfM を実行します。
+No commercial license required. COLMAP does not support equirectangular input directly, so the pipeline internally converts to perspective views before running SfM.
 
 ```bash
 uv run python run_pipeline.py "video.mp4" -o ./output \
     --sfm-backend colmap --sam3 pinhole --strategy igs+
 ```
 
-### その他の例
+### More Examples
 
 ```bash
-# Stage 3 から再開 (前回の Stage 1-2 出力を再利用)
+# Resume from Stage 3 (reuse previous Stage 1-2 output)
 uv run python run_pipeline.py "video.mp4" -o ./output/existing --from-stage 3
 
-# 2FPS でフレーム抽出、MCMC ストラテジーで 50000 イテレーション
+# 2FPS frame extraction, MCMC strategy with 50000 iterations
 uv run python run_pipeline.py "video.mp4" -o ./output \
     --fps 2.0 --iterations 50000 --strategy mcmc
 
-# SAM3 無効、底面マスクのみ
+# Disable SAM3, nadir mask only
 uv run python run_pipeline.py "video.mp4" -o ./output --sam3 off
 ```
 
-## 出力ディレクトリ構造
+## Output Directory Structure
 
 ```
 output/
 ├── 01_preprocessing/
-│   ├── frames/              # 抽出フレーム
-│   ├── frames_masked/       # マスク適用済みフレーム
-│   └── masks/               # SAM3 マスク画像
+│   ├── frames/              # Extracted frames
+│   ├── frames_masked/       # Frames with masks applied
+│   └── masks/               # SAM3 mask images
 ├── 02_sfm/
-│   ├── sparse/0/            # COLMAP 形式カメラパラメータ
-│   └── point_cloud.ply      # SfM ポイントクラウド
+│   ├── sparse/0/            # COLMAP-format camera parameters
+│   └── point_cloud.ply      # SfM point cloud
 ├── 02b_perspective/
-│   ├── images/              # Perspective 変換画像
-│   ├── masks/               # Perspective 変換マスク
-│   └── sparse/0/            # Perspective カメラパラメータ
+│   ├── images/              # Perspective-projected images
+│   ├── masks/               # Perspective-projected masks
+│   └── sparse/0/            # Perspective camera parameters
 ├── 03_3dgs/
-│   ├── lichtfeld_data/      # LichtFeld 入力データ (symlink)
-│   ├── checkpoints/         # トレーニングチェックポイント
-│   └── ...                  # 3DGS 出力ファイル
+│   ├── lichtfeld_data/      # LichtFeld input data (symlinks)
+│   ├── checkpoints/         # Training checkpoints
+│   └── ...                  # 3DGS output files
 └── pipeline_YYYYMMDD_HHMMSS.log
 ```
 
-## ライセンス
+## License
 
 - [LichtFeld Studio](https://github.com/MrNeRF/LichtFeld-Studio) — GPL-3.0
-- [Agisoft Metashape](https://www.agisoft.com/) — 商用ライセンス (Standard / Professional どちらでも可)
+- [Agisoft Metashape](https://www.agisoft.com/) — Commercial license (Standard or Professional, either works)
