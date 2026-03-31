@@ -114,17 +114,36 @@ uv run python run_pipeline.py "data/20260330/0330 (1).mp4" -o ./output/20260330
 | `--blur-threshold` | `100.0` | ブレ検出閾値 (Laplacian variance) |
 | `--lichtfeld` | 自動検出 | LichtFeld Studio バイナリのパス |
 
-### 実行例
+### おすすめ構成 (Metashape)
+
+Metashape は equirectangular 画像を Spherical カメラとして直接扱えるため、最も高精度な SfM 結果が得られます。Metashape のライセンス (商用) が必要です。
 
 ```bash
-# 2FPS で COLMAP バックエンド、SAM3 無効
-uv run python run_pipeline.py "video.mp4" -o ./output --fps 2.0 --sfm-backend colmap --sam3 off
+uv run python run_pipeline.py "video.mp4" -o ./output \
+    --sfm-backend metashape --sam3 pinhole --strategy igs+
+```
 
+### 完全オープンソース構成 (COLMAP)
+
+商用ライセンス不要で動作する構成です。COLMAP は equirectangular を直接扱えないため、内部で Perspective 変換してから SfM を実行します。
+
+```bash
+uv run python run_pipeline.py "video.mp4" -o ./output \
+    --sfm-backend colmap --sam3 pinhole --strategy igs+
+```
+
+### その他の例
+
+```bash
 # Stage 3 から再開 (前回の Stage 1-2 出力を再利用)
 uv run python run_pipeline.py "video.mp4" -o ./output/existing --from-stage 3
 
-# イテレーション数とストラテジーを指定
-uv run python run_pipeline.py "video.mp4" -o ./output --iterations 50000 --strategy mcmc
+# 2FPS でフレーム抽出、MCMC ストラテジーで 50000 イテレーション
+uv run python run_pipeline.py "video.mp4" -o ./output \
+    --fps 2.0 --iterations 50000 --strategy mcmc
+
+# SAM3 無効、底面マスクのみ
+uv run python run_pipeline.py "video.mp4" -o ./output --sam3 off
 ```
 
 ## 出力ディレクトリ構造
