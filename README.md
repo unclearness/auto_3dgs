@@ -52,7 +52,7 @@ cd auto_3dgs
 ### Windows
 
 1. Install [Agisoft Metashape](https://www.agisoft.com/) Standard Edition
-2. Place [LichtFeld Studio v0.5.0](https://lichtfeld-studio.com/) pre-built binary in `LichtFeld-Studio_Windows_v0.5.0/`
+2. Place [LichtFeld Studio v0.5.0](https://lichtfeld-studio.com/) pre-built binary in `LichtFeld-Studio-windows-v0.5.1/`
 3. *(If using COLMAP)* Download [COLMAP pre-built binary](https://colmap.github.io/install.html#pre-built-binaries) and add to PATH
 4. *(If using RealityScan)* Install via [official installer](https://www.capturingreality.com/realityscan)
 5. Install Python dependencies:

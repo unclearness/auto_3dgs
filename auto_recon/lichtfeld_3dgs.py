@@ -24,7 +24,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if platform.system() == "Windows":
     DEFAULT_LICHTFELD_EXE = (
         _PROJECT_ROOT
-        / "LichtFeld-Studio_Windows_v0.5.0"
+        / "LichtFeld-Studio-windows-v0.5.1"
         / "bin"
         / "LichtFeld-Studio.exe"
     )

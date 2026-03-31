@@ -4,6 +4,7 @@ __pycache__/
 output/
 data/
 LichtFeld-Studio_Windows_v0.5.0/
+LichtFeld-Studio-windows-v0.5.1/
 LichtFeld-Studio/build/
 vcpkg/
 *.log

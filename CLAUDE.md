@@ -40,7 +40,7 @@ The camera is mounted on a selfie stick, so the photographer's head/body appears
 
 ## 3DGS Backend: LichtFeld Studio
 
-- Windows: pre-built binary at `LichtFeld-Studio_Windows_v0.5.0/`
+- Windows: pre-built binary at `LichtFeld-Studio_Windows_vXXX/`
 - Linux: built from source at `LichtFeld-Studio/build/LichtFeld-Studio`
 - CUDA-based 3D Gaussian Splatting. Supports MCMC/ADC/IGS+ strategies.
 
