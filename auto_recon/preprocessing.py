@@ -278,6 +278,7 @@ def preprocess_video(
     sam3_mode: str | None = None,
     sam3_confidence: float = 0.3,
     sam3_prompt: str = "person",
+    sam3_batch_size: int = 4,
 ) -> dict[str, str | Path]:
     """Run the full preprocessing pipeline on a 360° video.
 
@@ -329,12 +330,28 @@ def preprocess_video(
     mask_path = output_dir / "nadir_mask.jpg"
     mask = generate_nadir_mask(w, h, mask_ratio=mask_ratio, output_path=mask_path, logger=logger)
 
-    # 4. SAM3 person masking (optional)
+    # 4. Copy sharp frames to output (no black-fill — masking is done via
+    #    mask images passed to 3DGS with --mask-mode ignore).
+    masked_dir.mkdir(parents=True, exist_ok=True)
+    import shutil
+    processed: list[Path] = []
+    for p in sharp_frames:
+        dst = masked_dir / p.name
+        shutil.copy2(p, dst)
+        processed.append(dst)
+    logger.info("Copied %d sharp frames to %s", len(processed), masked_dir)
+
+    # 5. Build per-frame mask images (255=keep, 0=ignore).
+    #    Always includes the nadir mask.  SAM3 person masks are merged when
+    #    enabled.  All mask sources are combined with bitwise AND.
+    masks_dir = output_dir / "masks_combined"
+    masks_dir.mkdir(parents=True, exist_ok=True)
+
+    sam3_mask_dir: Path | None = None
     if sam3_mode is not None:
         from auto_recon.sam3_masking import (
             mask_persons_equirect,
             mask_persons_pinhole,
-            apply_combined_masks,
         )
 
         sam3_mask_dir = output_dir / "sam3_masks"
@@ -350,19 +367,30 @@ def preprocess_video(
             mask_persons_pinhole(
                 sharp_frames, sam3_mask_dir,
                 prompt=sam3_prompt, confidence=sam3_confidence,
+                batch_size=sam3_batch_size,
             )
         else:
             raise ValueError(f"Unknown sam3_mode: {sam3_mode!r}. Use 'equirect' or 'pinhole'.")
 
-        # 5. Apply combined masks (SAM3 + nadir)
-        processed = apply_combined_masks(
-            sharp_frames, sam3_mask_dir, mask, masked_dir,
-            inpaint=inpaint,
-        )
-        logger.info("SAM3 + nadir masks applied to %d frames", len(processed))
-    else:
-        # 5. Apply nadir mask only
-        processed = apply_mask(sharp_frames, mask, masked_dir, inpaint=inpaint, logger=logger)
+    for frame_path in processed:
+        # Start with nadir mask (resize if needed)
+        combined = mask.copy()
+
+        # Merge SAM3 mask if available
+        if sam3_mask_dir is not None:
+            sam3_mask_path = sam3_mask_dir / f"{frame_path.stem}_mask.png"
+            if sam3_mask_path.exists():
+                sam3_m = cv2.imread(str(sam3_mask_path), cv2.IMREAD_GRAYSCALE)
+                if sam3_m.shape[:2] != (h, w):
+                    sam3_m = cv2.resize(sam3_m, (w, h), interpolation=cv2.INTER_NEAREST)
+                combined = cv2.bitwise_and(combined, sam3_m)
+
+        cv2.imwrite(str(masks_dir / f"{frame_path.stem}.png"), combined)
+
+    logger.info("Generated %d mask images (nadir%s) -> %s",
+                len(processed),
+                " + SAM3" if sam3_mode else "",
+                masks_dir)
 
     logger.info(
         "=== Preprocessing complete: %d frames ready in %s ===",
@@ -372,6 +400,7 @@ def preprocess_video(
     return {
         "frames_dir": masked_dir,
         "mask_path": mask_path,
+        "masks_dir": masks_dir,
         "frame_count": len(processed),
     }
 

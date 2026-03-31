@@ -87,6 +87,7 @@ def run_pipeline(
     sam3_mode: str | None = None,
     sam3_confidence: float = 0.3,
     sam3_prompt: str = "person",
+    sam3_batch_size: int = 4,
 ) -> dict[str, Path]:
     """Run the 360° video to Gaussian Splatting pipeline.
 
@@ -159,11 +160,15 @@ def run_pipeline(
             sam3_mode=sam3_mode,
             sam3_confidence=sam3_confidence,
             sam3_prompt=sam3_prompt,
+            sam3_batch_size=sam3_batch_size,
         )
 
         frames_dir = Path(preprocess_result["frames_dir"])
+        equirect_masks_dir = Path(preprocess_result["masks_dir"]) if preprocess_result.get("masks_dir") else None
         frame_count = preprocess_result["frame_count"]
         logger.info("Stage 1 complete: %d frames extracted", frame_count)
+        if equirect_masks_dir:
+            logger.info("Mask images: %s", equirect_masks_dir)
 
         if frame_count == 0:
             raise RuntimeError("No frames survived preprocessing. "
@@ -175,6 +180,10 @@ def run_pipeline(
                 f"Stage 1 output not found: {frames_dir}. "
                 "Run from stage 1 first."
             )
+        # Check if mask images exist from a previous run
+        equirect_masks_dir = preprocess_dir / "masks_combined"
+        if not equirect_masks_dir.is_dir():
+            equirect_masks_dir = None
         logger.info("Stage 1: Reusing %s", frames_dir)
 
     # -- Stage 2: SfM (+ equirect conversion where needed) ----------------------
@@ -195,6 +204,7 @@ def run_pipeline(
                 sparse_dir = sfm_result.sparse_dir
                 images_dir = sfm_result.images_dir
                 init_ply = sfm_result.point_cloud
+                masks_dir = None  # TODO: convert equirect masks to rig perspective masks
             else:
                 # -- Stage 2.5: Equirect to Perspective conversion -----------------
                 logger.info("-" * 40)
@@ -209,11 +219,13 @@ def run_pipeline(
                     out_size=(1024, 1024),
                     pitch_angles=[-30.0, 0.0, 30.0],
                     yaw_step_deg=90.0,
+                    masks_dir=equirect_masks_dir,
                 )
 
                 sparse_dir = persp_result["sparse_dir"]
                 images_dir = persp_result["images_dir"]
                 init_ply = sfm_result.point_cloud
+                masks_dir = persp_result.get("masks_dir")
                 logger.info("Stage 2.5 complete: %s", persp_dir)
         else:
             # Backend needs pinhole images: convert first, then run SfM.
@@ -253,10 +265,14 @@ def run_pipeline(
             sparse_dir = sfm_result.sparse_dir
             images_dir = sfm_result.images_dir
             init_ply = sfm_result.point_cloud
+            masks_dir = None  # TODO: masks for non-equirect path
     else:
         sparse_dir = persp_dir / "sparse" / "0"
         images_dir = persp_dir / "images"
         init_ply = sfm_dir / "point_cloud.ply"
+        masks_dir = persp_dir / "masks"
+        if not masks_dir.is_dir():
+            masks_dir = None
         if not sparse_dir.is_dir():
             # Fall back: check sfm_dir directly (non-equirect backends
             # store the sparse dir inside sfm_dir, not persp_dir).
@@ -284,9 +300,11 @@ def run_pipeline(
         colmap_sparse_dir=sparse_dir,
         images_dir=images_dir,
         output_dir=splat_dir,
+        masks_dir=masks_dir,
         lichtfeld_exe=lichtfeld_exe,
         iterations=iterations,
         strategy=strategy,
+        mask_mode="ignore" if masks_dir else None,
         init_path=init_ply if init_ply and Path(init_ply).exists() else None,
     )
 
@@ -343,6 +361,8 @@ def main() -> None:
                         help="SAM3 confidence threshold (default: 0.3)")
     parser.add_argument("--sam3-prompt", type=str, default="person",
                         help="SAM3 text prompt (default: person)")
+    parser.add_argument("--sam3-batch", type=int, default=4,
+                        help="SAM3 batch size for pinhole mode (default: 4)")
 
     args = parser.parse_args()
 
@@ -361,6 +381,7 @@ def main() -> None:
         sam3_mode=args.sam3 if args.sam3 != "off" else None,
         sam3_confidence=args.sam3_confidence,
         sam3_prompt=args.sam3_prompt,
+        sam3_batch_size=args.sam3_batch,
     )
 
     print(f"\nDone! Output in: {result['splat_dir']}")

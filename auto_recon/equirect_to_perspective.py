@@ -120,6 +120,7 @@ def convert_equirect_to_perspectives(
     out_size: tuple[int, int] = (1024, 1024),
     pitch_angles: list[float] | None = None,
     yaw_step_deg: float = 90.0,
+    masks_dir: str | Path | None = None,
 ) -> dict[str, Path]:
     """Convert equirectangular images + COLMAP Spherical data to perspective views.
 
@@ -154,6 +155,9 @@ def convert_equirect_to_perspectives(
     has_sparse = colmap_sparse_dir is not None
     if has_sparse:
         colmap_sparse_dir = Path(colmap_sparse_dir).resolve()
+    has_masks = masks_dir is not None
+    if has_masks:
+        masks_dir = Path(masks_dir).resolve()
 
     if pitch_angles is None:
         pitch_angles = [-30.0, 0.0, 30.0]
@@ -164,6 +168,10 @@ def convert_equirect_to_perspectives(
     out_images_dir.mkdir(parents=True, exist_ok=True)
     out_sparse_dir = output_dir / "sparse" / "0"
     out_sparse_dir.mkdir(parents=True, exist_ok=True)
+    out_masks_dir: Path | None = None
+    if has_masks:
+        out_masks_dir = output_dir / "masks"
+        out_masks_dir.mkdir(parents=True, exist_ok=True)
 
     out_w, out_h = out_size
     f = out_w / (2.0 * np.tan(np.radians(fov_deg) / 2.0))
@@ -226,6 +234,16 @@ def convert_equirect_to_perspectives(
             logger.warning("Cannot read: %s, skipping", eq_path)
             continue
 
+        # Load equirectangular mask if available
+        eq_mask = None
+        if has_masks:
+            mask_stem = Path(name).stem
+            mask_path = masks_dir / f"{mask_stem}.png"
+            if mask_path.exists():
+                eq_mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+            else:
+                logger.debug("No mask for %s", name)
+
         # Original camera rotation (world-to-camera)
         R_orig = _quat_to_rotation_matrix(qw, qx, qy, qz)
         t_orig = np.array([tx, ty, tz])
@@ -245,6 +263,18 @@ def convert_equirect_to_perspectives(
                     str(out_images_dir / out_name), persp,
                     [cv2.IMWRITE_JPEG_QUALITY, 95],
                 )
+
+                # Convert mask to perspective if available
+                if eq_mask is not None and out_masks_dir is not None:
+                    persp_mask = _equirect_to_perspective(
+                        cv2.cvtColor(eq_mask, cv2.COLOR_GRAY2BGR),
+                        fov_deg, out_size, yaw, pitch,
+                    )
+                    # Use nearest-neighbor threshold to keep mask binary
+                    persp_mask_gray = cv2.cvtColor(persp_mask, cv2.COLOR_BGR2GRAY)
+                    _, persp_mask_bin = cv2.threshold(persp_mask_gray, 127, 255, cv2.THRESH_BINARY)
+                    mask_out_name = f"{stem}_p{pitch:+.0f}_y{yaw:.0f}.png"
+                    cv2.imwrite(str(out_masks_dir / mask_out_name), persp_mask_bin)
 
                 if has_sparse:
                     # Compute combined world-to-camera rotation for this sub-view.
@@ -295,6 +325,7 @@ def convert_equirect_to_perspectives(
         "sparse_dir": out_sparse_dir,
         "images_dir": out_images_dir,
         "point_cloud": point_cloud_dst if point_cloud_dst.exists() else None,
+        "masks_dir": out_masks_dir,
     }
 
 
