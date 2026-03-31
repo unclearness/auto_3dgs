@@ -192,14 +192,16 @@ def convert_equirect_to_perspectives(
     )
 
     # --- cameras.txt (single PINHOLE camera) ---
+    # Only write COLMAP sparse files when we have camera poses.
     cam_lines = [
         "# Camera list with one line of data per camera:",
         "# CAMERA_ID, MODEL, WIDTH, HEIGHT, PARAMS[]",
         f"1 PINHOLE {out_w} {out_h} {f:.6f} {f:.6f} {cx:.1f} {cy:.1f}",
     ]
-    (out_sparse_dir / "cameras.txt").write_text(
-        "\n".join(cam_lines) + "\n", encoding="utf-8"
-    )
+    if has_sparse:
+        (out_sparse_dir / "cameras.txt").write_text(
+            "\n".join(cam_lines) + "\n", encoding="utf-8"
+        )
 
     # --- Generate perspective images and images.txt ---
     img_lines = [

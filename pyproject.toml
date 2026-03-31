@@ -9,9 +9,7 @@ dependencies = [
     "numpy>=2.4.4",
     "opencv-python>=4.13.0.92",
     "pillow>=12.1.1",
-    "pycolmap>=4.0.2",
     "pymupdf>=1.27.2.2",
-    "scipy>=1.17.1",
 ]
 
 [tool.uv.sources]
