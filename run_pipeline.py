@@ -9,8 +9,9 @@ Usage:
 
 Pipeline stages:
     1. Preprocessing  - Frame extraction (ffmpeg) + nadir mask removal
-    2. SfM            - Metashape (Spherical camera, COLMAP export)
-    2b. Perspective   - Equirectangular to pinhole image conversion
+    2. SfM            - Structure from Motion (Metashape/COLMAP/RealityScan)
+       - If backend supports equirect: SfM on equirect, then convert to pinhole
+       - If not: convert equirect to pinhole first, then run SfM
     3. 3DGS           - LichtFeld Studio (Gaussian Splatting training)
 """
 
@@ -24,9 +25,18 @@ import sys
 from pathlib import Path
 
 from auto_recon.preprocessing import preprocess_video
-from auto_recon.metashape_sfm import run_metashape_sfm
 from auto_recon.equirect_to_perspective import convert_equirect_to_perspectives
 from auto_recon.lichtfeld_3dgs import run_lichtfeld_pipeline
+from auto_recon.sfm_backend import SfMBackend, SfMResult
+from auto_recon.sfm_metashape import MetashapeSfMBackend
+from auto_recon.sfm_colmap import ColmapSfMBackend
+from auto_recon.sfm_realityscan import RealityScanSfMBackend
+
+_SFM_BACKENDS: dict[str, type[SfMBackend]] = {
+    "metashape": MetashapeSfMBackend,
+    "colmap": ColmapSfMBackend,
+    "realityscan": RealityScanSfMBackend,
+}
 
 _JST = datetime.timezone(datetime.timedelta(hours=9))
 
@@ -73,6 +83,7 @@ def run_pipeline(
     iterations: int = 30_000,
     strategy: str = "mcmc",
     from_stage: int = 1,
+    sfm_backend: str = "metashape",
 ) -> dict[str, Path]:
     """Run the 360° video to Gaussian Splatting pipeline.
 
@@ -98,9 +109,20 @@ def run_pipeline(
         3DGS optimization strategy (mcmc, adc, igs+).
     from_stage:
         Start from this stage (1, 2, or 3). Earlier stages' output is reused.
+    sfm_backend:
+        SfM backend to use: ``"metashape"``, ``"colmap"``, or
+        ``"realityscan"`` (default: ``"metashape"``).
     """
     video_path = Path(video_path).resolve()
     output_dir = Path(output_dir).resolve()
+
+    # Resolve SfM backend
+    if sfm_backend not in _SFM_BACKENDS:
+        raise ValueError(
+            f"Unknown SfM backend: {sfm_backend!r}. "
+            f"Choose from: {', '.join(_SFM_BACKENDS)}"
+        )
+    backend: SfMBackend = _SFM_BACKENDS[sfm_backend]()
 
     logger = _setup_logging(output_dir)
     logger.info("=" * 60)
@@ -108,6 +130,8 @@ def run_pipeline(
     logger.info("=" * 60)
     logger.info("Input:  %s", video_path)
     logger.info("Output: %s", output_dir)
+    logger.info("SfM backend: %s (equirect support: %s)",
+                sfm_backend, backend.supports_equirectangular)
     if from_stage > 1:
         logger.info("Resuming from stage %d (reusing earlier outputs)", from_stage)
 
@@ -147,50 +171,91 @@ def run_pipeline(
             )
         logger.info("Stage 1: Reusing %s", frames_dir)
 
-    # -- Stage 2: Metashape SfM ------------------------------------------------
+    # -- Stage 2: SfM (+ equirect conversion where needed) ----------------------
     if from_stage <= 2:
-        logger.info("-" * 40)
-        logger.info("Stage 2: Metashape SfM (Spherical camera)")
-        logger.info("-" * 40)
+        if backend.supports_equirectangular:
+            # Backend handles equirect natively: run SfM first, then convert.
+            logger.info("-" * 40)
+            logger.info("Stage 2: %s SfM (equirectangular)", sfm_backend)
+            logger.info("-" * 40)
 
-        sfm_result = run_metashape_sfm(
-            image_dir=frames_dir,
-            output_dir=sfm_dir,
-        )
+            sfm_result = backend.run(image_dir=frames_dir, output_dir=sfm_dir)
+            logger.info("Stage 2 complete: COLMAP sparse in %s", sfm_result.sparse_dir)
 
-        sfm_sparse_dir = sfm_result["sparse_dir"]
-        sfm_images_dir = sfm_result["images_dir"]
-        logger.info("Stage 2 complete: COLMAP sparse in %s", sfm_sparse_dir)
+            # -- Stage 2.5: Equirect to Perspective conversion -----------------
+            logger.info("-" * 40)
+            logger.info("Stage 2.5: Equirectangular to Perspective conversion")
+            logger.info("-" * 40)
 
-        # -- Stage 2.5: Equirect to Perspective conversion ---------------------
-        logger.info("-" * 40)
-        logger.info("Stage 2.5: Equirectangular to Perspective conversion")
-        logger.info("-" * 40)
+            persp_result = convert_equirect_to_perspectives(
+                images_dir=sfm_result.images_dir,
+                colmap_sparse_dir=sfm_result.sparse_dir,
+                output_dir=persp_dir,
+                fov_deg=90.0,
+                out_size=(1024, 1024),
+                pitch_angles=[-30.0, 0.0, 30.0],
+                yaw_step_deg=90.0,
+            )
 
-        persp_result = convert_equirect_to_perspectives(
-            images_dir=sfm_images_dir,
-            colmap_sparse_dir=sfm_sparse_dir,
-            output_dir=persp_dir,
-            fov_deg=90.0,
-            out_size=(1024, 1024),
-            pitch_angles=[-30.0, 0.0, 30.0],
-            yaw_step_deg=90.0,
-        )
+            sparse_dir = persp_result["sparse_dir"]
+            images_dir = persp_result["images_dir"]
+            init_ply = sfm_result.point_cloud
+            logger.info("Stage 2.5 complete: %s", persp_dir)
+        else:
+            # Backend needs pinhole images: convert first, then run SfM.
+            logger.info("-" * 40)
+            logger.info("Stage 2a: Equirectangular to Perspective conversion (pre-SfM)")
+            logger.info("-" * 40)
 
-        sparse_dir = persp_result["sparse_dir"]
-        images_dir = persp_result["images_dir"]
-        init_ply = sfm_result.get("point_cloud")
-        logger.info("Stage 2.5 complete: %s", persp_dir)
+            # For non-equirect backends we don't have a COLMAP sparse dir yet.
+            # convert_equirect_to_perspectives needs colmap_sparse_dir; run a
+            # lightweight conversion that only produces perspective images
+            # without requiring camera poses.  However, the current
+            # convert_equirect_to_perspectives requires a sparse dir.
+            #
+            # For backends that do NOT support equirect, we generate
+            # perspective images from the equirectangular frames using a
+            # uniform yaw/pitch grid (no existing camera poses needed).
+            persp_result = convert_equirect_to_perspectives(
+                images_dir=frames_dir,
+                colmap_sparse_dir=None,
+                output_dir=persp_dir,
+                fov_deg=90.0,
+                out_size=(1024, 1024),
+                pitch_angles=[-30.0, 0.0, 30.0],
+                yaw_step_deg=90.0,
+            )
+
+            persp_images_dir = persp_result["images_dir"]
+            logger.info("Stage 2a complete: perspective images in %s", persp_images_dir)
+
+            logger.info("-" * 40)
+            logger.info("Stage 2b: %s SfM (pinhole)", sfm_backend)
+            logger.info("-" * 40)
+
+            sfm_result = backend.run(image_dir=persp_images_dir, output_dir=sfm_dir)
+            logger.info("Stage 2b complete: COLMAP sparse in %s", sfm_result.sparse_dir)
+
+            sparse_dir = sfm_result.sparse_dir
+            images_dir = sfm_result.images_dir
+            init_ply = sfm_result.point_cloud
     else:
         sparse_dir = persp_dir / "sparse" / "0"
         images_dir = persp_dir / "images"
         init_ply = sfm_dir / "point_cloud.ply"
         if not sparse_dir.is_dir():
-            raise FileNotFoundError(
-                f"Stage 2 output not found: {sparse_dir}. "
-                "Run from stage 2 first."
-            )
-        logger.info("Stage 2/2.5: Reusing %s", persp_dir)
+            # Fall back: check sfm_dir directly (non-equirect backends
+            # store the sparse dir inside sfm_dir, not persp_dir).
+            alt_sparse = sfm_dir / "sparse" / "0"
+            if alt_sparse.is_dir():
+                sparse_dir = alt_sparse
+                images_dir = sfm_dir / "images"
+            else:
+                raise FileNotFoundError(
+                    f"Stage 2 output not found: {sparse_dir}. "
+                    "Run from stage 2 first."
+                )
+        logger.info("Stage 2/2.5: Reusing %s", sparse_dir.parent.parent)
 
     # -- Stage 3: LichtFeld Studio 3DGS ---------------------------------------
     logger.info("-" * 40)
@@ -254,6 +319,9 @@ def main() -> None:
                         help="3DGS optimization strategy (default: igs+)")
     parser.add_argument("--from-stage", type=int, default=1, choices=[1, 2, 3],
                         help="Start from this stage, reusing earlier outputs (default: 1)")
+    parser.add_argument("--sfm-backend", type=str, default="metashape",
+                        choices=["metashape", "colmap", "realityscan"],
+                        help="SfM backend to use (default: metashape)")
 
     args = parser.parse_args()
 
@@ -268,6 +336,7 @@ def main() -> None:
         iterations=args.iterations,
         strategy=args.strategy,
         from_stage=args.from_stage,
+        sfm_backend=args.sfm_backend,
     )
 
     print(f"\nDone! Output in: {result['splat_dir']}")

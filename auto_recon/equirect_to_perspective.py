@@ -114,7 +114,7 @@ def _equirect_to_perspective(
 
 def convert_equirect_to_perspectives(
     images_dir: str | Path,
-    colmap_sparse_dir: str | Path,
+    colmap_sparse_dir: str | Path | None,
     output_dir: str | Path,
     fov_deg: float = 90.0,
     out_size: tuple[int, int] = (1024, 1024),
@@ -150,8 +150,10 @@ def convert_equirect_to_perspectives(
         Keys: ``"sparse_dir"``, ``"images_dir"``, ``"point_cloud"``.
     """
     images_dir = Path(images_dir).resolve()
-    colmap_sparse_dir = Path(colmap_sparse_dir).resolve()
     output_dir = Path(output_dir).resolve()
+    has_sparse = colmap_sparse_dir is not None
+    if has_sparse:
+        colmap_sparse_dir = Path(colmap_sparse_dir).resolve()
 
     if pitch_angles is None:
         pitch_angles = [-30.0, 0.0, 30.0]
@@ -168,8 +170,20 @@ def convert_equirect_to_perspectives(
     cx = out_w / 2.0
     cy = out_h / 2.0
 
-    # Parse original images.txt to get camera transforms
-    orig_images = _parse_images_txt(colmap_sparse_dir / "images.txt")
+    # Parse original images.txt if available (Metashape path).
+    # When colmap_sparse_dir is None (COLMAP/RealityScan path), we generate
+    # perspective images without camera poses — SfM will be run afterward.
+    if has_sparse:
+        orig_images = _parse_images_txt(colmap_sparse_dir / "images.txt")
+    else:
+        # Build a fake image list from the directory (no poses)
+        _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}
+        orig_images = [
+            {"name": p.name, "qw": 1.0, "qx": 0.0, "qy": 0.0, "qz": 0.0,
+             "tx": 0.0, "ty": 0.0, "tz": 0.0}
+            for p in sorted(images_dir.iterdir())
+            if p.suffix.lower() in _IMAGE_EXTS
+        ]
 
     logger.info(
         "Converting %d equirect images x %d views (yaw) x %d pitches = %d perspective images",
@@ -230,45 +244,46 @@ def convert_equirect_to_perspectives(
                     [cv2.IMWRITE_JPEG_QUALITY, 95],
                 )
 
-                # Compute combined world-to-camera rotation for this sub-view.
-                # The equirect extraction applies R_yaw @ R_pitch to map
-                # sub-view directions to equirect directions. The inverse
-                # (world-to-subview) is (R_yaw @ R_pitch)^T.
-                R_extract = _yaw_pitch_to_extract_matrix(yaw, pitch)
-                R_sub = R_extract.T  # world-to-subview in equirect camera frame
-                R_combined = R_sub @ R_orig
-                t_combined = R_sub @ t_orig
+                if has_sparse:
+                    # Compute combined world-to-camera rotation for this sub-view.
+                    R_extract = _yaw_pitch_to_extract_matrix(yaw, pitch)
+                    R_sub = R_extract.T
+                    R_combined = R_sub @ R_orig
+                    t_combined = R_sub @ t_orig
 
-                qw_c, qx_c, qy_c, qz_c = _rotation_matrix_to_quaternion(R_combined)
+                    qw_c, qx_c, qy_c, qz_c = _rotation_matrix_to_quaternion(R_combined)
 
-                img_lines.append(
-                    f"{new_img_id} {qw_c:.10f} {qx_c:.10f} {qy_c:.10f} {qz_c:.10f} "
-                    f"{t_combined[0]:.10f} {t_combined[1]:.10f} {t_combined[2]:.10f} "
-                    f"1 {out_name}"
-                )
-                img_lines.append("")  # empty POINTS2D
+                    img_lines.append(
+                        f"{new_img_id} {qw_c:.10f} {qx_c:.10f} {qy_c:.10f} {qz_c:.10f} "
+                        f"{t_combined[0]:.10f} {t_combined[1]:.10f} {t_combined[2]:.10f} "
+                        f"1 {out_name}"
+                    )
+                    img_lines.append("")  # empty POINTS2D
+
                 new_img_id += 1
 
-    (out_sparse_dir / "images.txt").write_text(
-        "\n".join(img_lines) + "\n", encoding="utf-8"
-    )
-
-    # --- points3D.txt (copy from original or empty) ---
-    orig_p3d = colmap_sparse_dir / "points3D.txt"
-    if orig_p3d.exists():
-        import shutil
-        shutil.copy2(orig_p3d, out_sparse_dir / "points3D.txt")
-    else:
-        (out_sparse_dir / "points3D.txt").write_text(
-            "# 3D point list (empty)\n", encoding="utf-8"
+    # Write COLMAP files only when we have camera poses (Metashape path)
+    if has_sparse:
+        (out_sparse_dir / "images.txt").write_text(
+            "\n".join(img_lines) + "\n", encoding="utf-8"
         )
 
+        orig_p3d = colmap_sparse_dir / "points3D.txt"
+        if orig_p3d.exists():
+            import shutil
+            shutil.copy2(orig_p3d, out_sparse_dir / "points3D.txt")
+        else:
+            (out_sparse_dir / "points3D.txt").write_text(
+                "# 3D point list (empty)\n", encoding="utf-8"
+            )
+
     # Copy point cloud if it exists
-    point_cloud_src = colmap_sparse_dir.parent / "point_cloud.ply"
     point_cloud_dst = output_dir / "point_cloud.ply"
-    if point_cloud_src.exists():
-        import shutil
-        shutil.copy2(point_cloud_src, point_cloud_dst)
+    if has_sparse:
+        point_cloud_src = colmap_sparse_dir.parent / "point_cloud.ply"
+        if point_cloud_src.exists():
+            import shutil
+            shutil.copy2(point_cloud_src, point_cloud_dst)
 
     logger.info(
         "Generated %d perspective images in %s", new_img_id - 1, output_dir,
@@ -277,7 +292,7 @@ def convert_equirect_to_perspectives(
     return {
         "sparse_dir": out_sparse_dir,
         "images_dir": out_images_dir,
-        "point_cloud": point_cloud_dst if point_cloud_dst.exists() else point_cloud_src,
+        "point_cloud": point_cloud_dst if point_cloud_dst.exists() else None,
     }
 
 
