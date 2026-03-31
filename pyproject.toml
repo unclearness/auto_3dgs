@@ -1,0 +1,16 @@
+[project]
+name = "auto-recon"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "metashape",
+    "numpy>=2.4.4",
+    "opencv-python>=4.13.0.92",
+    "pillow>=12.1.1",
+    "pymupdf>=1.27.2.2",
+]
+
+[tool.uv.sources]
+metashape = { url = "https://download.agisoft.com/metashape-2.3.0-cp39.cp310.cp311.cp312.cp313-none-win_amd64.whl" }

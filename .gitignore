@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+output/
+data/
+LichtFeld-Studio_Windows_v0.5.0/
+*.log
+*.psx
+*.files/
+.claude/settings.local.json
