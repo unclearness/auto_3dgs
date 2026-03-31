@@ -182,25 +182,33 @@ def run_pipeline(
             sfm_result = backend.run(image_dir=frames_dir, output_dir=sfm_dir)
             logger.info("Stage 2 complete: COLMAP sparse in %s", sfm_result.sparse_dir)
 
-            # -- Stage 2.5: Equirect to Perspective conversion -----------------
-            logger.info("-" * 40)
-            logger.info("Stage 2.5: Equirectangular to Perspective conversion")
-            logger.info("-" * 40)
+            if sfm_result.is_pinhole:
+                # Backend already produced pinhole images (e.g. COLMAP with
+                # internal equirect-to-perspective conversion).  Skip Stage 2.5.
+                logger.info("Backend produced pinhole images; skipping Stage 2.5")
+                sparse_dir = sfm_result.sparse_dir
+                images_dir = sfm_result.images_dir
+                init_ply = sfm_result.point_cloud
+            else:
+                # -- Stage 2.5: Equirect to Perspective conversion -----------------
+                logger.info("-" * 40)
+                logger.info("Stage 2.5: Equirectangular to Perspective conversion")
+                logger.info("-" * 40)
 
-            persp_result = convert_equirect_to_perspectives(
-                images_dir=sfm_result.images_dir,
-                colmap_sparse_dir=sfm_result.sparse_dir,
-                output_dir=persp_dir,
-                fov_deg=90.0,
-                out_size=(1024, 1024),
-                pitch_angles=[-30.0, 0.0, 30.0],
-                yaw_step_deg=90.0,
-            )
+                persp_result = convert_equirect_to_perspectives(
+                    images_dir=sfm_result.images_dir,
+                    colmap_sparse_dir=sfm_result.sparse_dir,
+                    output_dir=persp_dir,
+                    fov_deg=90.0,
+                    out_size=(1024, 1024),
+                    pitch_angles=[-30.0, 0.0, 30.0],
+                    yaw_step_deg=90.0,
+                )
 
-            sparse_dir = persp_result["sparse_dir"]
-            images_dir = persp_result["images_dir"]
-            init_ply = sfm_result.point_cloud
-            logger.info("Stage 2.5 complete: %s", persp_dir)
+                sparse_dir = persp_result["sparse_dir"]
+                images_dir = persp_result["images_dir"]
+                init_ply = sfm_result.point_cloud
+                logger.info("Stage 2.5 complete: %s", persp_dir)
         else:
             # Backend needs pinhole images: convert first, then run SfM.
             logger.info("-" * 40)

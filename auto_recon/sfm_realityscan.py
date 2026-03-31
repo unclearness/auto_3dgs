@@ -1,8 +1,12 @@
 """RealityScan SfM backend with panorama rig support.
 
 Converts equirectangular images to virtual pinhole views (same as the COLMAP
-backend), then runs RealityScan CLI with shared intrinsics and subdirectory
-structure.  Exports COLMAP-format registration for downstream 3DGS.
+backend), flattens them into a single directory with unique names, then runs
+RealityScan CLI.  Exports COLMAP-format registration for downstream 3DGS.
+
+RealityScan strips subdirectory prefixes from image names in its COLMAP
+export, so images are flattened before import (unlike the COLMAP backend
+which uses per-camera subdirectories natively).
 
 References:
     https://qiita.com/Tks_Yoshinaga/items/896713e9c637cbfe35d1#34-realityscan
@@ -26,6 +30,8 @@ from auto_recon.sfm_backend import SfMBackend, SfMResult
 
 logger = logging.getLogger(__name__)
 
+_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}
+
 # Default install location on Windows.
 _DEFAULT_RS_EXE = r"C:\Program Files\Epic Games\RealityScan_2.1\RealityScan.exe"
 
@@ -48,6 +54,46 @@ def _to_rs_path(p: str | Path) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Image flattening
+# ---------------------------------------------------------------------------
+
+
+def _flatten_images(src_dir: Path, dst_dir: Path) -> int:
+    """Flatten images from per-camera subdirectories into a single directory.
+
+    Renames ``pano_camera0/frame_000001.jpg`` to ``cam00_frame_000001.jpg``
+    etc. to avoid name collisions.  Returns the number of images copied.
+
+    If *src_dir* contains no subdirectories (already flat), copies as-is.
+    """
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    count = 0
+
+    for p in sorted(src_dir.rglob("*")):
+        if not p.is_file() or p.suffix.lower() not in _IMAGE_EXTS:
+            continue
+        rel = p.relative_to(src_dir)
+        if len(rel.parts) > 1:
+            # Subdirectory structure: build a flat unique name.
+            # e.g. "pano_camera0/frame_000001.jpg" -> "cam00_frame_000001.jpg"
+            subdir = rel.parts[0]
+            # Extract numeric camera index from "pano_cameraNN" prefix.
+            cam_idx = subdir.replace("pano_camera", "")
+            try:
+                cam_idx_int = int(cam_idx)
+                flat_name = f"cam{cam_idx_int:02d}_{rel.parts[-1]}"
+            except ValueError:
+                flat_name = f"{subdir}_{rel.parts[-1]}"
+        else:
+            flat_name = p.name
+
+        shutil.copy2(str(p), str(dst_dir / flat_name))
+        count += 1
+
+    return count
+
+
+# ---------------------------------------------------------------------------
 # Output reorganization
 # ---------------------------------------------------------------------------
 
@@ -62,7 +108,7 @@ def _reorganize_output(output_dir: Path, image_dir: Path) -> dict[str, Path]:
             cameras.txt
             images.txt
             points3D.txt
-          images/   (already present from panorama rendering)
+          images/   (flat directory with unique image names)
           point_cloud.ply
     """
     output_dir = Path(output_dir).resolve()
@@ -100,6 +146,9 @@ def _reorganize_output(output_dir: Path, image_dir: Path) -> dict[str, Path]:
         shutil.move(str(sparse_ply), str(point_cloud))
 
     # --- Images directory ---
+    # image_dir is already output_dir / "images" (created by the backend
+    # before running RealityScan), so a symlink/junction is only needed
+    # when it lives elsewhere.
     images_link = output_dir / "images"
     if not images_link.exists():
         try:
@@ -136,10 +185,10 @@ def _reorganize_output(output_dir: Path, image_dir: Path) -> dict[str, Path]:
 class RealityScanSfMBackend(SfMBackend):
     """SfM backend using RealityScan CLI with panorama rig support.
 
-    Like the COLMAP backend, converts equirectangular images to virtual
-    pinhole views organized in per-camera subdirectories, then runs
-    RealityScan with shared intrinsics (``-setConstantCalibrationGroups``)
-    and subdirectory inclusion (``-set appIncSubdirs=true``).
+    Converts equirectangular images to virtual pinhole views, flattens
+    them into a single directory with unique names (to work around
+    RealityScan stripping subdirectory prefixes in COLMAP exports), then
+    runs SfM and exports COLMAP registration.
 
     Parameters
     ----------
@@ -150,7 +199,7 @@ class RealityScanSfMBackend(SfMBackend):
     config_dir:
         Directory containing the XML parameter files for export.
     render_options:
-        Panorama render options. Default: 4 yaw steps × 3 pitches.
+        Panorama render options. Default: 4 yaw steps x 3 pitches.
     """
 
     def __init__(
@@ -175,9 +224,9 @@ class RealityScanSfMBackend(SfMBackend):
         """Run RealityScan SfM on equirectangular images.
 
         Pipeline:
-        1. Render equirect → virtual pinhole views (per-camera subdirectories)
-        2. RealityScan: import with subdirs, shared intrinsics, align
-        3. Export COLMAP registration + sparse point cloud
+        1. Render equirect -> virtual pinhole views (per-camera subdirectories)
+        2. Flatten into a single directory with unique names
+        3. RealityScan: import, align, export COLMAP registration + sparse PLY
         4. Reorganize to standard COLMAP layout
 
         Returns SfMResult with is_pinhole=True.
@@ -194,17 +243,30 @@ class RealityScanSfMBackend(SfMBackend):
 
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        # Temporary directory for per-camera subdirectory images
+        persp_subdir = output_dir / "_persp_raw"
+        persp_subdir.mkdir(exist_ok=True, parents=True)
+
+        # Final flat images directory
         persp_image_dir = output_dir / "images"
         persp_image_dir.mkdir(exist_ok=True, parents=True)
 
-        # Step 1: Render perspective images (no masks needed for RealityScan)
+        # Step 1: Render perspective images into per-camera subdirectories
         logger.info("Step 1: Rendering perspective images from panoramas")
         _rig_cameras, _virtual_cam = render_perspective_images(
-            image_dir, persp_image_dir, self._render_options, mask_dir=None,
+            image_dir, persp_subdir, self._render_options, mask_dir=None,
         )
 
-        # Step 2-3: Build and run RealityScan command
-        logger.info("Step 2: Running RealityScan SfM")
+        # Step 2: Flatten into a single directory with unique names
+        logger.info("Step 2: Flattening perspective images")
+        n_flat = _flatten_images(persp_subdir, persp_image_dir)
+        logger.info("Flattened %d images into %s", n_flat, persp_image_dir)
+
+        # Clean up the subdirectory version
+        shutil.rmtree(str(persp_subdir), ignore_errors=True)
+
+        # Step 3: Build and run RealityScan command
+        logger.info("Step 3: Running RealityScan SfM")
         cmd = self._build_command(persp_image_dir, output_dir)
         logger.info("Command: %s", " ".join(shlex.quote(c) for c in cmd))
 
@@ -215,7 +277,7 @@ class RealityScanSfMBackend(SfMBackend):
             )
 
         # Step 4: Reorganize output
-        logger.info("Step 3: Reorganizing output to COLMAP format")
+        logger.info("Step 4: Reorganizing output to COLMAP format")
         paths = _reorganize_output(output_dir, persp_image_dir)
 
         logger.info("RealityScan panorama SfM complete: %s", output_dir)
@@ -234,10 +296,8 @@ class RealityScanSfMBackend(SfMBackend):
     ) -> list[str]:
         """Build the RealityScan CLI command.
 
-        Key settings matching the Qiita reference:
-        - ``-set appIncSubdirs=true``: include images in subdirectories
-        - ``-setConstantCalibrationGroups``: share intrinsics per subfolder
-        - Distortion model NONE (undistorted pinhole from panorama rendering)
+        Images are already flattened into a single directory, so we do NOT
+        need ``-set appIncSubdirs=true`` or ``-setConstantCalibrationGroups``.
         """
         config_dir = self._config_dir.resolve()
         sparse_params = config_dir / "sparse_point_cloud.xml"
@@ -259,14 +319,10 @@ class RealityScanSfMBackend(SfMBackend):
         if self._headless:
             cmd += ["-headless"]
 
-        # Scene setup with subdirectory support
+        # Scene setup — flat directory, no subdirectory handling needed
         cmd += ["-newScene"]
-        cmd += ["-set", "appIncSubdirs=true"]
         cmd += ["-addFolder", _to_rs_path(image_dir)]
         cmd += ["-selectAllImages"]
-
-        # Shared intrinsics per subfolder (all virtual cameras have same params)
-        cmd += ["-setConstantCalibrationGroups"]
 
         # Camera model: NONE (no distortion — already undistorted pinhole)
         cmd += ["-editInputSelection", "inpDistortionModel=0"]

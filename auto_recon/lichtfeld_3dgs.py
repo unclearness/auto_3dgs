@@ -159,12 +159,12 @@ def _link_or_copy_dir(src: Path, dst: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def _count_images(data_dir: Path) -> int:
-    """Count image files in *data_dir*/images/."""
+    """Count image files in *data_dir*/images/ (including subdirectories)."""
     images_path = data_dir / "images"
     if not images_path.is_dir():
         return 0
     exts = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}
-    return sum(1 for f in images_path.iterdir() if f.suffix.lower() in exts)
+    return sum(1 for f in images_path.rglob("*") if f.is_file() and f.suffix.lower() in exts)
 
 
 def run_training(
