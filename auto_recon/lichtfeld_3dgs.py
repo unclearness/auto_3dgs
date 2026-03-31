@@ -7,6 +7,7 @@ via LichtFeld-Studio.exe CLI.
 from __future__ import annotations
 
 import logging
+import platform
 import shutil
 import subprocess
 import sys
@@ -19,12 +20,21 @@ JST = timezone(timedelta(hours=9))
 
 # Default executable path relative to the project root.
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_LICHTFELD_EXE = (
-    _PROJECT_ROOT
-    / "LichtFeld-Studio_Windows_v0.5.0"
-    / "bin"
-    / "LichtFeld-Studio.exe"
-)
+
+if platform.system() == "Windows":
+    DEFAULT_LICHTFELD_EXE = (
+        _PROJECT_ROOT
+        / "LichtFeld-Studio_Windows_v0.5.0"
+        / "bin"
+        / "LichtFeld-Studio.exe"
+    )
+else:
+    DEFAULT_LICHTFELD_EXE = (
+        _PROJECT_ROOT
+        / "LichtFeld-Studio"
+        / "build"
+        / "LichtFeld-Studio"
+    )
 
 # ---------------------------------------------------------------------------
 # COLMAP text-to-binary helpers
