@@ -3,20 +3,25 @@ name = "auto-recon"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.12,<3.14"
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "metashape",
     "opencv-python>=4.11.0.86",
     "sam3",
     "pillow>=12.1.1",
     "pymupdf>=1.27.2.2",
-    "torch>=2.10.0",
-    "torchvision>=0.25.0",
-    "xformers>=0.0.35",
+    "torch>=2.10.0,<2.11",
+    "torchvision>=0.25.0,<0.26",
+    "xformers==0.0.35",
     "einops>=0.8.2",
     "pycocotools>=2.0.11",
     "psutil>=7.2.2",
     "scipy>=1.17.1",
+    "tensorrt>=10.16.0.72",
+    "onnx>=1.20.1",
+    "onnxscript>=0.6.2",
+    "onnxslim>=0.1.90",
+    "transformers>=5.4.0",
 ]
 
 [tool.uv]
@@ -26,8 +31,8 @@ environments = [
 ]
 
 [[tool.uv.index]]
-name = "pytorch-cu130"
-url = " https://download.pytorch.org/whl/cu130"
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 
@@ -38,10 +43,10 @@ metashape = [
 ]
 sam3 = { workspace = true, editable = true }
 torch = [
-  { index = "pytorch-cu130", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+  { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 torchvision = [
-  { index = "pytorch-cu130", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+  { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
 ]
 
 [tool.uv.workspace]
