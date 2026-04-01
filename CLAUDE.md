@@ -60,9 +60,11 @@ LichtFeld-Studio --resume <checkpoint_file>
 ```
 
 ### Key Options
+- `--strategy`: mrnf (default, v0.5.1+) / mcmc / adc / igs+
+- `--ppisp`: Enable per-camera appearance modeling (default: on, v0.5.1+)
 - `--mask-mode`: none / segment / ignore / alpha_consistent
 - `--steps-scaler`: Training steps scale factor (num_images / 300 as guideline)
-- `--max-cap`: Maximum number of Gaussians for MCMC / IGS+
+- `--max-cap`: Maximum number of Gaussians for MRNF / MCMC / IGS+
 - `--tile-mode`: Tile mode for memory efficiency (1/2/4)
 - `--init`: Initialize from SfM point cloud (.ply)
 - `--undistort`: Undistort images before training

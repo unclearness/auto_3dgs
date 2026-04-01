@@ -81,7 +81,8 @@ def run_pipeline(
     inpaint: bool = False,
     lichtfeld_exe: str | Path | None = None,
     iterations: int = 30_000,
-    strategy: str = "mcmc",
+    strategy: str = "mrnf",
+    ppisp: bool = True,
     from_stage: int = 1,
     sfm_backend: str = "metashape",
     sam3_mode: str | None = None,
@@ -306,6 +307,7 @@ def run_pipeline(
         lichtfeld_exe=lichtfeld_exe,
         iterations=iterations,
         strategy=strategy,
+        ppisp=ppisp,
         mask_mode="ignore" if masks_dir else None,
         init_path=init_ply if init_ply and Path(init_ply).exists() else None,
     )
@@ -348,9 +350,11 @@ def main() -> None:
                         help="Path to LichtFeld-Studio.exe")
     parser.add_argument("--iterations", type=int, default=30_000,
                         help="3DGS training iterations (default: 30000)")
-    parser.add_argument("--strategy", type=str, default="igs+",
-                        choices=["mcmc", "adc", "igs+"],
-                        help="3DGS optimization strategy (default: igs+)")
+    parser.add_argument("--strategy", type=str, default="mrnf",
+                        choices=["mrnf", "mcmc", "adc", "igs+"],
+                        help="3DGS optimization strategy (default: mrnf)")
+    parser.add_argument("--no-ppisp", action="store_true",
+                        help="Disable PPISP per-camera appearance modeling")
     parser.add_argument("--from-stage", type=int, default=1, choices=[1, 2, 3],
                         help="Start from this stage, reusing earlier outputs (default: 1)")
     parser.add_argument("--sfm-backend", type=str, default="metashape",
@@ -380,6 +384,7 @@ def main() -> None:
         lichtfeld_exe=args.lichtfeld,
         iterations=args.iterations,
         strategy=args.strategy,
+        ppisp=not args.no_ppisp,
         from_stage=args.from_stage,
         sfm_backend=args.sfm_backend,
         sam3_mode=args.sam3 if args.sam3 != "off" else None,

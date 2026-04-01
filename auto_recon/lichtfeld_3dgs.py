@@ -183,7 +183,7 @@ def run_training(
     *,
     lichtfeld_exe: str | Path | None = None,
     iterations: int = 30_000,
-    strategy: str = "mcmc",
+    strategy: str = "mrnf",
     sh_degree: int = 3,
     max_cap: int | None = None,
     steps_scaler: float | None = None,
@@ -193,6 +193,7 @@ def run_training(
     resize_factor: str | None = None,
     undistort: bool = False,
     init_path: str | Path | None = None,
+    ppisp: bool = True,
     extra_args: list[str] | None = None,
 ) -> Path:
     """Run LichtFeld Studio 3DGS training.
@@ -208,11 +209,11 @@ def run_training(
     iterations:
         Number of training iterations.
     strategy:
-        Training strategy: ``"mcmc"``, ``"adc"``, or ``"igs+"``.
+        Training strategy: ``"mrnf"``, ``"mcmc"``, ``"adc"``, or ``"igs+"``.
     sh_degree:
         Max spherical-harmonics degree (0-3).
     max_cap:
-        Maximum number of Gaussians (for MCMC / igs+).
+        Maximum number of Gaussians (for MCMC / MRNF / igs+).
     steps_scaler:
         Scale factor for training steps.  If *None*, auto-computed as
         ``image_count / 300``.
@@ -228,6 +229,9 @@ def run_training(
         Undistort images on-the-fly during training.
     init_path:
         Path to a splat file (.ply, .sog, .spz, .resume) for initialisation.
+    ppisp:
+        Enable PPISP (Per-Pixel Image-Space Prediction) for per-camera
+        appearance modeling.  Recommended for outdoor/varying lighting.
     extra_args:
         Additional CLI arguments passed verbatim.
 
@@ -281,6 +285,8 @@ def run_training(
         cmd += ["--resize_factor", resize_factor]
     if undistort:
         cmd.append("--undistort")
+    if ppisp:
+        cmd.append("--ppisp")
     if init_path is not None:
         cmd += ["--init", str(Path(init_path).resolve())]
     if extra_args:
@@ -330,7 +336,7 @@ def run_lichtfeld_pipeline(
     *,
     lichtfeld_exe: str | Path | None = None,
     iterations: int = 30_000,
-    strategy: str = "mcmc",
+    strategy: str = "mrnf",
     sh_degree: int = 3,
     max_cap: int | None = None,
     steps_scaler: float | None = None,
@@ -340,6 +346,7 @@ def run_lichtfeld_pipeline(
     resize_factor: str | None = None,
     undistort: bool = False,
     init_path: str | Path | None = None,
+    ppisp: bool = True,
     extra_args: list[str] | None = None,
 ) -> Path:
     """Run the full LichtFeld 3DGS pipeline: prepare data then train.
@@ -383,6 +390,7 @@ def run_lichtfeld_pipeline(
         resize_factor=resize_factor,
         undistort=undistort,
         init_path=init_path,
+        ppisp=ppisp,
         extra_args=extra_args,
     )
 
