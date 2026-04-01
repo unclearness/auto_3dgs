@@ -21,7 +21,7 @@ Fully automated pipeline for generating 3D Gaussian Splatting from 360° video.
   ├─ Stage 2.5: Equirectangular → Perspective conversion
   │
   └─ Stage 3: 3D Gaussian Splatting
-       └─ LichtFeld Studio (IGS+ / MCMC / ADC)
+       └─ LichtFeld Studio v0.5.1 (MRNF + PPISP / MCMC / IGS+ / ADC)
 ```
 
 ## Requirements
@@ -29,12 +29,12 @@ Fully automated pipeline for generating 3D Gaussian Splatting from 360° video.
 | | Windows | Linux (Ubuntu 24.04) |
 |------|---------|---------------------|
 | Python | 3.12+ | 3.12+ |
-| CUDA Toolkit | 12.8+ | 12.8+ |
+| CUDA Toolkit | 13.0+ | 13.0+ |
 | NVIDIA GPU | Required | Required |
 | Metashape | Standard Edition | Python wheel (auto-installed) |
 | COLMAP | [Pre-built binary](https://colmap.github.io/install.html#pre-built-binaries) | [Build from source](https://colmap.github.io/install.html#build-from-source) |
 | RealityScan | [Official installer](https://www.capturingreality.com/realityscan) | [Official installer](https://www.capturingreality.com/realityscan) |
-| LichtFeld Studio | Pre-built binary | Build from source |
+| LichtFeld Studio | Pre-built binary (v0.5.1+) | Build from source (v0.5.1+) |
 
 > **SfM backends**: Only the backend you choose (`--sfm-backend`) needs to be installed. Metashape is recommended; COLMAP is the fully open-source alternative.
 
@@ -52,7 +52,7 @@ cd auto_3dgs
 ### Windows
 
 1. Install [Agisoft Metashape](https://www.agisoft.com/) Standard Edition
-2. Place [LichtFeld Studio v0.5.0](https://lichtfeld-studio.com/) pre-built binary in `LichtFeld-Studio-windows-v0.5.1/`
+2. Place [LichtFeld Studio](https://lichtfeld.io/) pre-built binary. For example, `LichtFeld-Studio-windows-v0.5.1/`
 3. *(If using COLMAP)* Download [COLMAP pre-built binary](https://colmap.github.io/install.html#pre-built-binaries) and add to PATH
 4. *(If using RealityScan)* Install via [official installer](https://www.capturingreality.com/realityscan)
 5. Install Python dependencies:
@@ -117,11 +117,14 @@ uv run python run_pipeline.py "data/20260330/0330 (1).mp4" -o ./output/20260330
 |--------|---------|-------------|
 | `--fps` | `1.0` | Frame extraction rate (fps) |
 | `--sfm-backend` | `metashape` | SfM backend (`metashape` / `colmap` / `realityscan`) |
-| `--iterations` | `30000` | 3DGS training iterations |
-| `--strategy` | `igs+` | 3DGS optimization strategy (`igs+` / `mcmc` / `adc`) |
+| `--iterations` | `30000` | 3DGS training iterations (scaled by steps_scaler) |
+| `--strategy` | `mrnf` | 3DGS strategy (`mrnf` / `mcmc` / `igs+` / `adc`) |
+| `--no-ppisp` | off | Disable PPISP per-camera appearance modeling |
 | `--sam3` | `pinhole` | SAM3 person masking (`pinhole` / `equirect` / `off`) |
+| `--sam3-batch` | `4` | SAM3 batch size for pinhole mode |
+| `--sam3-scale` | `1.0` | SAM3 input scale (e.g. `0.5` for half resolution) |
 | `--from-stage` | `1` | Resume from stage (`1` / `2` / `3`) |
-| `--mask-ratio` | `0.18` | Nadir mask height ratio (0–1) |
+| `--mask-ratio` | `0.18` | Nadir mask height ratio (0-1) |
 | `--blur-threshold` | `100.0` | Blur detection threshold (Laplacian variance) |
 | `--lichtfeld` | Auto-detect | Path to LichtFeld Studio binary |
 
@@ -131,7 +134,7 @@ Metashape natively supports equirectangular images as Spherical cameras, produci
 
 ```bash
 uv run python run_pipeline.py "video.mp4" -o ./output \
-    --sfm-backend metashape --sam3 pinhole --strategy igs+
+    --sfm-backend metashape
 ```
 
 ### Fully Open-Source Setup (COLMAP)
@@ -140,7 +143,7 @@ No commercial license required. COLMAP does not support equirectangular input di
 
 ```bash
 uv run python run_pipeline.py "video.mp4" -o ./output \
-    --sfm-backend colmap --sam3 pinhole --strategy igs+
+    --sfm-backend colmap
 ```
 
 ### More Examples
@@ -151,7 +154,7 @@ uv run python run_pipeline.py "video.mp4" -o ./output/existing --from-stage 3
 
 # 2FPS frame extraction, MCMC strategy with 50000 iterations
 uv run python run_pipeline.py "video.mp4" -o ./output \
-    --fps 2.0 --iterations 50000 --strategy mcmc
+    --fps 2.0 --iterations 50000 --strategy mcmc --no-ppisp
 
 # Disable SAM3, nadir mask only
 uv run python run_pipeline.py "video.mp4" -o ./output --sam3 off
