@@ -169,14 +169,14 @@ The pipeline detects and masks people (moving objects that degrade SfM/3DGS) usi
 
 | Mode | Flag | Speed (per equirect frame) | Mask Type | Quality |
 |------|------|---------------------------|-----------|---------|
-| **Pinhole** (default) | `--sam3 pinhole` | ~1.2 s | Pixel-precise | Best |
+| **Pinhole** (default) | `--sam3 pinhole` | ~2.6 s | Pixel-precise | Best |
 | Equirect | `--sam3 equirect` | ~0.5 s | Pixel-precise | Good (some distortion artifacts) |
-| **TRT Pinhole** | `--sam3 trt` | ~0.5 s | Bounding boxes | Recall ~0.98 vs pixel masks |
+| **TRT Pinhole** | `--sam3 trt` | ~0.9 s | Bounding boxes | Recall ~0.98 vs pixel masks |
 | TRT Equirect | `--sam3 trt-equirect` | ~0.1 s | Bounding boxes | Recall ~0.98 vs pixel masks |
 | Off | `--sam3 off` | — | — | — |
 
 - **Pinhole modes** extract 12 perspective views per equirectangular frame, run detection on each view, then project masks back to equirectangular space.  More accurate because SAM3 works better on undistorted images.
-- **TRT modes** use TensorRT-accelerated inference with bounding-box masks instead of pixel-precise segmentation.  ~2x faster with ~98% recall.  Slightly over-masks (bboxes include background) but this is acceptable for 3DGS training exclusion.
+- **TRT modes** use TensorRT-accelerated inference (via [DART](https://github.com/mkturkcan/DART)) with bounding-box masks instead of pixel-precise segmentation.  ~22x faster than unoptimized pinhole with ~98% recall.  Slightly over-masks (bboxes include background) but this is acceptable for 3DGS training exclusion.  Runtime files are in `auto_recon/dart_trt/`; the upstream `sam3/` submodule is never modified.
 - **Equirect modes** run detection directly on the equirectangular image.  Faster but may miss small figures distorted near the poles.
 
 ### Building TRT Engines (one-time setup)
@@ -195,6 +195,8 @@ This produces two engine files in the project root:
 | `enc_dec_fp16.engine` | ~46 MB | Encoder-decoder head (FP16) |
 
 Requirements: `tensorrt`, `onnx`, `onnxscript`, `transformers` (install with `uv add tensorrt onnx onnxscript onnxslim transformers`).  First build takes 5-10 minutes.  Engines must be rebuilt when switching GPUs.
+
+The build script temporarily clones [DART](https://github.com/mkturkcan/DART) for ONNX export, then cleans up.  The upstream `sam3/` submodule is not modified.
 
 ## Output Directory Structure
 
