@@ -361,8 +361,8 @@ def main() -> None:
                         choices=["metashape", "colmap", "realityscan"],
                         help="SfM backend to use (default: metashape)")
     parser.add_argument("--sam3", type=str, default="pinhole",
-                        choices=["equirect", "pinhole", "off"],
-                        help="SAM3 person masking mode (default: pinhole, off to disable)")
+                        choices=["pinhole", "equirect", "trt", "trt-equirect", "off"],
+                        help="SAM3 person masking mode (default: pinhole; trt for 2x faster bbox masks)")
     parser.add_argument("--sam3-confidence", type=float, default=0.3,
                         help="SAM3 confidence threshold (default: 0.3)")
     parser.add_argument("--sam3-prompt", type=str, default="person",

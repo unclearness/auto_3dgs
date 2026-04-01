@@ -4,3 +4,6 @@
 [submodule "LichtFeld-Studio"]
 	path = LichtFeld-Studio
 	url = https://github.com/MrNeRF/LichtFeld-Studio.git
+[submodule "dart"]
+	path = dart
+	url = https://github.com/mkturkcan/DART.git

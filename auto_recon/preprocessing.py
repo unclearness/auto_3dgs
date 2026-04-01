@@ -353,6 +353,8 @@ def preprocess_video(
         from auto_recon.sam3_masking import (
             mask_persons_equirect,
             mask_persons_pinhole,
+            mask_persons_equirect_trt,
+            mask_persons_pinhole_trt,
         )
 
         sam3_mask_dir = output_dir / "sam3_masks"
@@ -372,8 +374,21 @@ def preprocess_video(
                 batch_size=sam3_batch_size,
                 scale=sam3_scale,
             )
+        elif sam3_mode == "trt":
+            mask_persons_pinhole_trt(
+                sharp_frames, sam3_mask_dir,
+                confidence=sam3_confidence,
+            )
+        elif sam3_mode == "trt-equirect":
+            mask_persons_equirect_trt(
+                sharp_frames, sam3_mask_dir,
+                confidence=sam3_confidence,
+            )
         else:
-            raise ValueError(f"Unknown sam3_mode: {sam3_mode!r}. Use 'equirect' or 'pinhole'.")
+            raise ValueError(
+                f"Unknown sam3_mode: {sam3_mode!r}. "
+                "Use 'pinhole', 'equirect', 'trt', or 'trt-equirect'."
+            )
 
     for frame_path in processed:
         # Start with nadir mask (resize if needed)

@@ -37,6 +37,12 @@ _SAM3_BPE_PATH = (
 # ---------------------------------------------------------------------------
 
 _processor = None
+_trt_predictor = None
+
+# Default TRT engine paths (relative to project root).
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_DEFAULT_TRT_BACKBONE = _PROJECT_ROOT / "hf_backbone_fp16.engine"
+_DEFAULT_TRT_ENC_DEC = _PROJECT_ROOT / "enc_dec_fp16.engine"
 
 
 def _get_processor(confidence: float = 0.3):
@@ -56,9 +62,71 @@ def _get_processor(confidence: float = 0.3):
     return _processor
 
 
+def _get_trt_predictor(
+    confidence: float = 0.5,
+    trt_backbone: str | Path | None = None,
+    trt_enc_dec: str | Path | None = None,
+):
+    """Lazy-load DART TRT predictor for fast bbox detection."""
+    global _trt_predictor
+    if _trt_predictor is None:
+        from sam3.model_builder import build_sam3_image_model
+        from sam3.model.sam3_multiclass_fast import Sam3MultiClassPredictorFast
+
+        bb = str(trt_backbone or _DEFAULT_TRT_BACKBONE)
+        ed = str(trt_enc_dec or _DEFAULT_TRT_ENC_DEC)
+        if not Path(bb).exists():
+            raise FileNotFoundError(f"TRT backbone engine not found: {bb}")
+        if not Path(ed).exists():
+            raise FileNotFoundError(f"TRT enc-dec engine not found: {ed}")
+
+        logger.info("Loading DART TRT predictor (backbone=%s, enc_dec=%s)", bb, ed)
+        model = build_sam3_image_model(bpe_path=str(_SAM3_BPE_PATH))
+        _trt_predictor = Sam3MultiClassPredictorFast(
+            model, device="cuda", use_fp16=True,
+            shared_encoder=True, generic_prompt="person",
+            detection_only=True,
+            trt_engine_path=bb,
+            trt_enc_dec_engine_path=ed,
+        )
+        _trt_predictor.set_classes(["person"])
+        _trt_predictor._confidence = confidence
+        logger.info("DART TRT predictor loaded")
+    return _trt_predictor
+
+
 # ---------------------------------------------------------------------------
 # Core: run SAM3 on a single image
 # ---------------------------------------------------------------------------
+
+
+def _detect_persons_trt(
+    image: np.ndarray,
+    predictor,
+    confidence: float = 0.5,
+    bbox_expand: float = 0.1,
+) -> np.ndarray:
+    """Detect persons using TRT and return a rectangular bbox mask.
+
+    Returns binary mask (H, W) uint8 -- 255 inside expanded bboxes.
+    """
+    h, w = image.shape[:2]
+    pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    state = predictor.set_image(pil_image)
+    results = predictor.predict(state, confidence_threshold=confidence)
+
+    mask = np.zeros((h, w), dtype=np.uint8)
+    boxes = results["boxes"]
+    if boxes is not None and len(boxes) > 0:
+        boxes_np = boxes.cpu().numpy()
+        for x1, y1, x2, y2 in boxes_np:
+            bw, bh = x2 - x1, y2 - y1
+            x1 = max(0, int(x1 - bw * bbox_expand))
+            y1 = max(0, int(y1 - bh * bbox_expand))
+            x2 = min(w, int(x2 + bw * bbox_expand))
+            y2 = min(h, int(y2 + bh * bbox_expand))
+            mask[y1:y2, x1:x2] = 255
+    return mask
 
 
 def _segment_persons(
@@ -352,6 +420,59 @@ def mask_persons_equirect(
 
 
 # ---------------------------------------------------------------------------
+# Mode 1b: Equirectangular direct (TRT bbox)
+# ---------------------------------------------------------------------------
+
+
+def mask_persons_equirect_trt(
+    image_paths: list[Path],
+    output_dir: Path,
+    *,
+    confidence: float = 0.5,
+    bbox_expand: float = 0.1,
+    dilate_px: int = 15,
+    trt_backbone: str | Path | None = None,
+    trt_enc_dec: str | Path | None = None,
+) -> list[Path]:
+    """Detect persons using TRT and produce rectangular bbox masks.
+
+    ~2.4x faster than SAM3 PyTorch with Recall ~0.98 against pixel masks.
+    Requires pre-built TRT engines (see scripts/build_trt_engines.py).
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    predictor = _get_trt_predictor(confidence, trt_backbone, trt_enc_dec)
+
+    mask_paths: list[Path] = []
+    for i, img_path in enumerate(image_paths):
+        img = cv2.imread(str(img_path))
+        if img is None:
+            logger.warning("Cannot read %s, skipping", img_path)
+            continue
+
+        person_mask = _detect_persons_trt(img, predictor, confidence, bbox_expand)
+
+        if dilate_px > 0 and person_mask.any():
+            kernel = cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE, (dilate_px * 2 + 1, dilate_px * 2 + 1)
+            )
+            person_mask = cv2.dilate(person_mask, kernel)
+
+        keep_mask = cv2.bitwise_not(person_mask)
+        out_path = output_dir / f"{img_path.stem}_mask.png"
+        cv2.imwrite(str(out_path), keep_mask)
+        mask_paths.append(out_path)
+
+        if i % 10 == 0 or i == len(image_paths) - 1:
+            n_person_px = int((person_mask > 0).sum())
+            logger.info(
+                "[trt-equirect] %d/%d %s - %d person pixels",
+                i + 1, len(image_paths), img_path.name, n_person_px,
+            )
+
+    return mask_paths
+
+
+# ---------------------------------------------------------------------------
 # Mode 2: Pinhole (perspective) views
 # ---------------------------------------------------------------------------
 
@@ -464,6 +585,95 @@ def mask_persons_pinhole(
         n_person_px = int((combined_person_mask > 0).sum())
         logger.info(
             "[pinhole] %d/%d %s - %d person pixels",
+            i + 1, len(image_paths), img_path.name, n_person_px,
+        )
+
+    return mask_paths
+
+
+# ---------------------------------------------------------------------------
+# Mode 2b: Pinhole TRT (perspective views + TRT bbox detection)
+# ---------------------------------------------------------------------------
+
+
+def mask_persons_pinhole_trt(
+    image_paths: list[Path],
+    output_dir: Path,
+    *,
+    confidence: float = 0.5,
+    fov_deg: float = 90.0,
+    out_size: tuple[int, int] = (1024, 1024),
+    pitch_angles: list[float] | None = None,
+    yaw_step_deg: float = 90.0,
+    bbox_expand: float = 0.1,
+    dilate_px: int = 15,
+    trt_backbone: str | Path | None = None,
+    trt_enc_dec: str | Path | None = None,
+) -> list[Path]:
+    """Detect persons in perspective views using TRT bbox detection.
+
+    Like mask_persons_pinhole but uses TRT for ~2x faster inference.
+    Produces rectangular bbox masks instead of pixel-precise masks.
+    Recall vs SAM3 pixel masks is ~0.98.
+
+    Requires pre-built TRT engines (see scripts/build_trt_engines.py).
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    predictor = _get_trt_predictor(confidence, trt_backbone, trt_enc_dec)
+
+    if pitch_angles is None:
+        pitch_angles = [-30.0, 0.0, 30.0]
+    yaw_angles = list(np.arange(0, 360, yaw_step_deg))
+    out_w, out_h = out_size
+
+    view_grid = [(pitch, yaw) for pitch in pitch_angles for yaw in yaw_angles]
+    n_views = len(view_grid)
+    logger.info(
+        "Pinhole TRT: %d images x %d views",
+        len(image_paths), n_views,
+    )
+
+    mask_paths: list[Path] = []
+    for i, img_path in enumerate(image_paths):
+        equirect = cv2.imread(str(img_path))
+        if equirect is None:
+            logger.warning("Cannot read %s, skipping", img_path)
+            continue
+
+        eq_h, eq_w = equirect.shape[:2]
+        combined_person_mask = np.zeros((eq_h, eq_w), dtype=np.uint8)
+
+        for pitch, yaw in view_grid:
+            map_x, map_y = _equirect_to_persp_map(
+                eq_w, eq_h, fov_deg, out_w, out_h, yaw, pitch,
+            )
+            persp = cv2.remap(
+                equirect, map_x, map_y,
+                cv2.INTER_LINEAR, borderMode=cv2.BORDER_WRAP,
+            )
+
+            persp_mask = _detect_persons_trt(persp, predictor, confidence, bbox_expand)
+
+            if persp_mask.any():
+                eq_mask = _persp_mask_to_equirect(
+                    persp_mask, eq_w, eq_h, fov_deg, yaw, pitch,
+                )
+                combined_person_mask = np.maximum(combined_person_mask, eq_mask)
+
+        if dilate_px > 0 and combined_person_mask.any():
+            kernel = cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE, (dilate_px * 2 + 1, dilate_px * 2 + 1)
+            )
+            combined_person_mask = cv2.dilate(combined_person_mask, kernel)
+
+        keep_mask = cv2.bitwise_not(combined_person_mask)
+        out_path = output_dir / f"{img_path.stem}_mask.png"
+        cv2.imwrite(str(out_path), keep_mask)
+        mask_paths.append(out_path)
+
+        n_person_px = int((combined_person_mask > 0).sum())
+        logger.info(
+            "[trt-pinhole] %d/%d %s - %d person pixels",
             i + 1, len(image_paths), img_path.name, n_person_px,
         )
 
