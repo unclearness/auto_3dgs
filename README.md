@@ -120,7 +120,7 @@ uv run python run_pipeline.py "data/20260330/0330 (1).mp4" -o ./output/20260330
 | `--iterations` | `30000` | 3DGS training iterations (scaled by steps_scaler) |
 | `--strategy` | `mrnf` | 3DGS strategy (`mrnf` / `mcmc` / `igs+` / `adc`) |
 | `--no-ppisp` | off | Disable PPISP per-camera appearance modeling |
-| `--sam3` | `pinhole` | SAM3 person masking (`pinhole` / `equirect` / `off`) |
+| `--sam3` | `pinhole` | Person masking mode (see [SAM3 Masking Modes](#sam3-masking-modes)) |
 | `--sam3-batch` | `4` | SAM3 batch size for pinhole mode |
 | `--sam3-scale` | `1.0` | SAM3 input scale (e.g. `0.5` for half resolution) |
 | `--from-stage` | `1` | Resume from stage (`1` / `2` / `3`) |
@@ -158,16 +158,53 @@ uv run python run_pipeline.py "video.mp4" -o ./output \
 
 # Disable SAM3, nadir mask only
 uv run python run_pipeline.py "video.mp4" -o ./output --sam3 off
+
+# TRT mode (2x faster, requires engine build)
+uv run python run_pipeline.py "video.mp4" -o ./output --sam3 trt
 ```
+
+## SAM3 Masking Modes
+
+The pipeline detects and masks people (moving objects that degrade SfM/3DGS) using [SAM3](https://github.com/facebookresearch/sam3).  Masks are passed to LichtFeld Studio via `--mask-mode ignore` so masked regions are excluded from training without black-filling the images.
+
+| Mode | Flag | Speed (per equirect frame) | Mask Type | Quality |
+|------|------|---------------------------|-----------|---------|
+| **Pinhole** (default) | `--sam3 pinhole` | ~1.2 s | Pixel-precise | Best |
+| Equirect | `--sam3 equirect` | ~0.5 s | Pixel-precise | Good (some distortion artifacts) |
+| **TRT Pinhole** | `--sam3 trt` | ~0.5 s | Bounding boxes | Recall ~0.98 vs pixel masks |
+| TRT Equirect | `--sam3 trt-equirect` | ~0.1 s | Bounding boxes | Recall ~0.98 vs pixel masks |
+| Off | `--sam3 off` | — | — | — |
+
+- **Pinhole modes** extract 12 perspective views per equirectangular frame, run detection on each view, then project masks back to equirectangular space.  More accurate because SAM3 works better on undistorted images.
+- **TRT modes** use TensorRT-accelerated inference with bounding-box masks instead of pixel-precise segmentation.  ~2x faster with ~98% recall.  Slightly over-masks (bboxes include background) but this is acceptable for 3DGS training exclusion.
+- **Equirect modes** run detection directly on the equirectangular image.  Faster but may miss small figures distorted near the poles.
+
+### Building TRT Engines (one-time setup)
+
+TRT modes require pre-built TensorRT engines specific to your GPU.  Build them once:
+
+```bash
+uv run python scripts/build_trt_engines.py
+```
+
+This produces two engine files in the project root:
+
+| File | Size | Description |
+|------|------|-------------|
+| `hf_backbone_fp16.engine` | ~874 MB | HuggingFace ViT-H backbone (FP16) |
+| `enc_dec_fp16.engine` | ~46 MB | Encoder-decoder head (FP16) |
+
+Requirements: `tensorrt`, `onnx`, `onnxscript`, `transformers` (install with `uv add tensorrt onnx onnxscript onnxslim transformers`).  First build takes 5-10 minutes.  Engines must be rebuilt when switching GPUs.
 
 ## Output Directory Structure
 
 ```
 output/
 ├── 01_preprocessing/
-│   ├── frames/              # Extracted frames
-│   ├── frames_masked/       # Frames with masks applied
-│   └── masks/               # SAM3 mask images
+│   ├── frames_raw/          # Extracted frames (all)
+│   ├── frames_masked/       # Sharp frames (blur-filtered)
+│   ├── sam3_masks/          # Per-frame SAM3 person masks
+│   └── masks_combined/      # Combined nadir + SAM3 masks (for 3DGS)
 ├── 02_sfm/
 │   ├── sparse/0/            # COLMAP-format camera parameters
 │   └── point_cloud.ply      # SfM point cloud
