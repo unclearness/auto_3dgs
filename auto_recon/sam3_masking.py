@@ -531,6 +531,10 @@ def mask_persons_pinhole(
         len(image_paths), n_views, batch_size,
     )
 
+    # Pre-compute remap maps (cached across frames with same resolution)
+    forward_maps: list[tuple[np.ndarray, np.ndarray]] | None = None
+    inverse_maps: list[tuple[np.ndarray, np.ndarray]] | None = None
+
     mask_paths: list[Path] = []
     for i, img_path in enumerate(image_paths):
         equirect = cv2.imread(str(img_path))
@@ -539,14 +543,25 @@ def mask_persons_pinhole(
             continue
 
         eq_h, eq_w = equirect.shape[:2]
+
+        # Build and cache maps on first frame
+        if forward_maps is None:
+            logger.info("Building remap caches (%dx%d, %d views)...", eq_w, eq_h, n_views)
+            forward_maps = [
+                _equirect_to_persp_map(eq_w, eq_h, fov_deg, out_w, out_h, yaw, pitch)
+                for pitch, yaw in view_grid
+            ]
+            inverse_maps = _build_inverse_maps(
+                eq_w, eq_h, fov_deg, out_w, out_h, view_grid,
+            )
+            logger.info("Remap caches built")
+
         combined_person_mask = np.zeros((eq_h, eq_w), dtype=np.uint8)
 
-        # Extract all perspective views
+        # Extract all perspective views using cached forward maps
         persp_images: list[np.ndarray] = []
-        for pitch, yaw in view_grid:
-            map_x, map_y = _equirect_to_persp_map(
-                eq_w, eq_h, fov_deg, out_w, out_h, yaw, pitch,
-            )
+        for vi in range(n_views):
+            map_x, map_y = forward_maps[vi]
             persp = cv2.remap(
                 equirect, map_x, map_y,
                 cv2.INTER_LINEAR, borderMode=cv2.BORDER_WRAP,
@@ -560,16 +575,17 @@ def mask_persons_pinhole(
             batch_masks = _segment_persons_batch(batch, processor, prompt, scale=scale)
             persp_masks.extend(batch_masks)
 
-        # Project masks back to equirect
-        for idx, (pitch, yaw) in enumerate(view_grid):
-            persp_mask = persp_masks[idx]
+        # Back-project masks using cached inverse maps
+        for vi in range(n_views):
+            persp_mask = persp_masks[vi]
             if persp_mask.any():
-                eq_mask = _persp_mask_to_equirect(
-                    persp_mask, eq_w, eq_h, fov_deg, yaw, pitch,
+                inv_x, inv_y = inverse_maps[vi]
+                eq_mask = cv2.remap(
+                    persp_mask, inv_x, inv_y,
+                    cv2.INTER_NEAREST, borderValue=0,
                 )
                 combined_person_mask = np.maximum(combined_person_mask, eq_mask)
 
-        # Dilate for safety margin
         if dilate_px > 0 and combined_person_mask.any():
             kernel = cv2.getStructuringElement(
                 cv2.MORPH_ELLIPSE, (dilate_px * 2 + 1, dilate_px * 2 + 1)
