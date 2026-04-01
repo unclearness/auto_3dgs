@@ -596,6 +596,55 @@ def mask_persons_pinhole(
 # ---------------------------------------------------------------------------
 
 
+def _build_inverse_maps(
+    eq_w: int,
+    eq_h: int,
+    fov_deg: float,
+    out_w: int,
+    out_h: int,
+    view_grid: list[tuple[float, float]],
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Pre-compute inverse maps (equirect -> perspective) for all views.
+
+    Returns list of (inv_map_x, inv_map_y) for cv2.remap-based
+    back-projection.  ~83x faster than per-pixel numpy projection.
+    """
+    fov = np.radians(fov_deg)
+    f = out_w / (2.0 * np.tan(fov / 2.0))
+    cx, cy = out_w / 2.0, out_h / 2.0
+
+    # Shared equirect -> spherical 3D (computed once)
+    eq_u = np.arange(eq_w, dtype=np.float32)
+    eq_v = np.arange(eq_h, dtype=np.float32)
+    eq_uu, eq_vv = np.meshgrid(eq_u, eq_v)
+    lon = (eq_uu / eq_w - 0.5) * 2 * np.pi
+    lat = -(eq_vv / eq_h - 0.5) * np.pi
+    x3 = np.cos(lat) * np.sin(lon)
+    y3 = -np.sin(lat)
+    z3 = np.cos(lat) * np.cos(lon)
+
+    inv_maps = []
+    for pitch_deg, yaw_deg in view_grid:
+        yaw = np.radians(yaw_deg)
+        pitch = np.radians(pitch_deg)
+        cos_p, sin_p = np.cos(pitch), np.sin(pitch)
+        cos_y, sin_y = np.cos(yaw), np.sin(yaw)
+
+        x_r = x3 * cos_y - z3 * sin_y
+        z_r = x3 * sin_y + z3 * cos_y
+        y_rr = y3 * cos_p + z_r * sin_p
+        z_rr = -y3 * sin_p + z_r * cos_p
+
+        valid = z_rr > 0
+        inv_x = np.full((eq_h, eq_w), -1, dtype=np.float32)
+        inv_y = np.full((eq_h, eq_w), -1, dtype=np.float32)
+        inv_x[valid] = (f * x_r[valid] / z_rr[valid] + cx).astype(np.float32)
+        inv_y[valid] = (f * y_rr[valid] / z_rr[valid] + cy).astype(np.float32)
+        inv_maps.append((inv_x, inv_y))
+
+    return inv_maps
+
+
 def mask_persons_pinhole_trt(
     image_paths: list[Path],
     output_dir: Path,
@@ -612,9 +661,9 @@ def mask_persons_pinhole_trt(
 ) -> list[Path]:
     """Detect persons in perspective views using TRT bbox detection.
 
-    Like mask_persons_pinhole but uses TRT for ~2x faster inference.
-    Produces rectangular bbox masks instead of pixel-precise masks.
-    Recall vs SAM3 pixel masks is ~0.98.
+    Like mask_persons_pinhole but uses TRT for ~2x faster inference
+    and cached inverse maps for ~83x faster back-projection.
+    Produces rectangular bbox masks (Recall ~0.98 vs SAM3 pixel masks).
 
     Requires pre-built TRT engines (see scripts/build_trt_engines.py).
     """
@@ -633,6 +682,11 @@ def mask_persons_pinhole_trt(
         len(image_paths), n_views,
     )
 
+    # Pre-compute all remap maps on first frame (cached for subsequent frames
+    # with the same resolution).
+    forward_maps: list[tuple[np.ndarray, np.ndarray]] | None = None
+    inverse_maps: list[tuple[np.ndarray, np.ndarray]] | None = None
+
     mask_paths: list[Path] = []
     for i, img_path in enumerate(image_paths):
         equirect = cv2.imread(str(img_path))
@@ -641,22 +695,38 @@ def mask_persons_pinhole_trt(
             continue
 
         eq_h, eq_w = equirect.shape[:2]
+
+        # Build and cache maps on first frame
+        if forward_maps is None:
+            logger.info("Building remap caches (%dx%d, %d views)...", eq_w, eq_h, n_views)
+            forward_maps = [
+                _equirect_to_persp_map(eq_w, eq_h, fov_deg, out_w, out_h, yaw, pitch)
+                for pitch, yaw in view_grid
+            ]
+            inverse_maps = _build_inverse_maps(
+                eq_w, eq_h, fov_deg, out_w, out_h, view_grid,
+            )
+            logger.info("Remap caches built")
+
         combined_person_mask = np.zeros((eq_h, eq_w), dtype=np.uint8)
 
-        for pitch, yaw in view_grid:
-            map_x, map_y = _equirect_to_persp_map(
-                eq_w, eq_h, fov_deg, out_w, out_h, yaw, pitch,
-            )
+        for vi in range(n_views):
+            # Extract perspective view
+            map_x, map_y = forward_maps[vi]
             persp = cv2.remap(
                 equirect, map_x, map_y,
                 cv2.INTER_LINEAR, borderMode=cv2.BORDER_WRAP,
             )
 
+            # TRT detection
             persp_mask = _detect_persons_trt(persp, predictor, confidence, bbox_expand)
 
             if persp_mask.any():
-                eq_mask = _persp_mask_to_equirect(
-                    persp_mask, eq_w, eq_h, fov_deg, yaw, pitch,
+                # Fast back-projection via cached inverse map + cv2.remap
+                inv_x, inv_y = inverse_maps[vi]
+                eq_mask = cv2.remap(
+                    persp_mask, inv_x, inv_y,
+                    cv2.INTER_NEAREST, borderValue=0,
                 )
                 combined_person_mask = np.maximum(combined_person_mask, eq_mask)
 
