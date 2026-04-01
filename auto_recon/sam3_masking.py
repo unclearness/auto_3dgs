@@ -71,7 +71,7 @@ def _get_trt_predictor(
     global _trt_predictor
     if _trt_predictor is None:
         from sam3.model_builder import build_sam3_image_model
-        from sam3.model.sam3_multiclass_fast import Sam3MultiClassPredictorFast
+        from auto_recon.dart_trt.multiclass_fast import Sam3MultiClassPredictorFast
 
         bb = str(trt_backbone or _DEFAULT_TRT_BACKBONE)
         ed = str(trt_enc_dec or _DEFAULT_TRT_ENC_DEC)

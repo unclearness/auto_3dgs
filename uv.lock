@@ -141,6 +141,7 @@ dependencies = [
     { name = "torch", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
     { name = "torchvision", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
     { name = "transformers", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "triton-windows", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
     { name = "xformers", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
 ]
 
@@ -166,6 +167,7 @@ requires-dist = [
     { name = "torchvision", marker = "sys_platform != 'linux' and sys_platform != 'win32'", specifier = ">=0.25.0,<0.26" },
     { name = "torchvision", marker = "sys_platform == 'linux' or sys_platform == 'win32'", specifier = ">=0.25.0,<0.26", index = "https://download.pytorch.org/whl/cu128" },
     { name = "transformers", specifier = ">=5.4.0" },
+    { name = "triton-windows", specifier = ">=3.6.0.post26" },
     { name = "xformers", specifier = "==0.0.35" },
 ]
 
@@ -2196,7 +2198,7 @@ requires-dist = [
     { name = "matplotlib", marker = "extra == 'notebooks'" },
     { name = "notebook", marker = "extra == 'notebooks'" },
     { name = "numba", marker = "extra == 'dev'" },
-    { name = "numpy", specifier = ">=1.26" },
+    { name = "numpy", specifier = ">=1.26,<2" },
     { name = "opencv-python", marker = "extra == 'dev'" },
     { name = "opencv-python", marker = "extra == 'notebooks'" },
     { name = "pandas", marker = "extra == 'dev'" },
@@ -2692,6 +2694,14 @@ version = "3.6.0"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ab/a8/cdf8b3e4c98132f965f88c2313a4b493266832ad47fb52f23d14d4f86bb5/triton-3.6.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:74caf5e34b66d9f3a429af689c1c7128daba1d8208df60e81106b115c00d6fca", size = 188266850, upload-time = "2026-01-20T16:00:43.041Z" },
+]
+
+[[package]]
+name = "triton-windows"
+version = "3.6.0.post26"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/62/1e/8d9814e67ba3f20094cf3c69e7815a491f20beb86469a647550ba86728b0/triton_windows-3.6.0.post26-cp312-cp312-win_amd64.whl", hash = "sha256:189d8c57911aa9d2ff983a715e5c967b325f576307db60924cab22b501a36515", size = 47402104, upload-time = "2026-03-10T02:51:40.997Z" },
 ]
 
 [[package]]

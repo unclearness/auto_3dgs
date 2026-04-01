@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """Build TensorRT engines for DART fast person detection.
 
-Exports the HuggingFace SAM3 backbone and encoder-decoder as TRT FP16
-engines.  These are used by the ``--sam3 trt`` pipeline mode for ~2x
-faster person masking (bbox-based) compared to SAM3 PyTorch.
+Temporarily clones DART (https://github.com/mkturkcan/DART) to run the
+ONNX export scripts, builds TRT FP16 engines, then removes the clone.
+The upstream sam3 submodule is never modified.
 
 Requirements:
     - tensorrt >= 10.9.0  (``uv add tensorrt``)
     - onnx, onnxscript     (``uv add onnx onnxscript onnxslim``)
     - transformers         (``uv add transformers``)
-    - A sample image for backbone tracing
 
 Usage:
     uv run python scripts/build_trt_engines.py
@@ -17,25 +16,26 @@ Usage:
     # Custom output directory:
     uv run python scripts/build_trt_engines.py --output-dir ./engines
 
-    # Custom image size (must match pipeline usage):
-    uv run python scripts/build_trt_engines.py --imgsz 1008
-
 The script produces two engine files:
-    hf_backbone_fp16.engine  (~874 MB) - ViT-H backbone
+    hf_backbone_fp16.engine  (~874 MB) - ViT-H backbone (HuggingFace export)
     enc_dec_fp16.engine      (~46 MB)  - Encoder-decoder head
 
-First build takes 5-10 minutes.  Engines are hardware-specific and must
-be rebuilt when switching GPUs.
+First build takes 5-10 minutes.  Engines are GPU-specific and must be
+rebuilt when switching hardware.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+
+DART_REPO = "https://github.com/mkturkcan/DART.git"
 
 
 def main() -> None:
@@ -54,6 +54,10 @@ def main() -> None:
         "--max-classes", type=int, default=1,
         help="Max classes for enc-dec engine (default: 1, person only)",
     )
+    parser.add_argument(
+        "--keep-dart", action="store_true",
+        help="Keep the DART clone after build (for debugging)",
+    )
     args = parser.parse_args()
 
     output_dir = args.output_dir.resolve()
@@ -61,87 +65,113 @@ def main() -> None:
 
     python = sys.executable
 
-    # Download checkpoint if needed
+    # Locate SAM3 checkpoint (auto-downloads from HuggingFace)
     print("=== Locating SAM3 checkpoint ===")
     from huggingface_hub import hf_hub_download
     checkpoint = hf_hub_download("facebook/sam3", "sam3.pt")
     print(f"Checkpoint: {checkpoint}")
 
-    # Create a temporary sample image for backbone export
+    # Create a temporary sample image for backbone tracing
     sample_image = output_dir / "_trt_sample.jpg"
-    if not sample_image.exists():
-        import numpy as np
-        import cv2
-        img = np.random.randint(0, 255, (1008, 1008, 3), dtype=np.uint8)
-        cv2.imwrite(str(sample_image), img)
+    import numpy as np
+    import cv2
+    img = np.random.randint(0, 255, (args.imgsz, args.imgsz, 3), dtype=np.uint8)
+    cv2.imwrite(str(sample_image), img)
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmpdir = Path(tmpdir)
+    # Clone DART to a temporary directory
+    dart_dir = Path(tempfile.mkdtemp(prefix="dart_"))
+    print(f"\n=== Cloning DART to {dart_dir} ===")
+    _run(["git", "clone", "--depth", "1", DART_REPO, str(dart_dir)])
 
-        # Step 1: Export encoder-decoder ONNX
-        enc_dec_onnx = tmpdir / "enc_dec.onnx"
-        enc_dec_engine = output_dir / "enc_dec_fp16.engine"
-        print(f"\n=== Step 1: Export encoder-decoder ONNX ===")
-        _run([
-            python, "-m", "sam3.trt.export_enc_dec",
-            "--checkpoint", checkpoint,
-            "--output", str(enc_dec_onnx),
-            "--max-classes", str(args.max_classes),
-            "--imgsz", str(args.imgsz),
-            "--no-validate",
-        ])
+    try:
+        # DART's sam3 package must be on PYTHONPATH for the export scripts.
+        # We prepend it so DART's sam3 (with trt module) takes priority
+        # over the upstream sam3 during export only.
+        dart_env = {
+            "PYTHONPATH": str(dart_dir) + os.pathsep + os.environ.get("PYTHONPATH", ""),
+            "PYTHONIOENCODING": "utf-8",
+        }
 
-        # Step 2: Build encoder-decoder TRT engine
-        print(f"\n=== Step 2: Build encoder-decoder TRT engine ===")
-        _run([
-            python, "-m", "sam3.trt.build_engine",
-            "--onnx", str(enc_dec_onnx),
-            "--output", str(enc_dec_engine),
-            "--fp16", "--mixed-precision", "none",
-        ])
-        print(f"Encoder-decoder engine: {enc_dec_engine} ({enc_dec_engine.stat().st_size / 1e6:.1f} MB)")
+        with tempfile.TemporaryDirectory() as onnx_dir:
+            onnx_dir = Path(onnx_dir)
 
-        # Step 3: Export HuggingFace backbone ONNX + TRT
-        # export_hf_backbone.py handles both ONNX export and TRT build
-        print(f"\n=== Step 3: Export HuggingFace backbone ===")
-        hf_script = Path(__file__).parent / "export_hf_backbone.py"
-        if not hf_script.exists():
-            print(f"ERROR: {hf_script} not found.")
-            print("Download from: https://github.com/mkturkcan/DART/blob/main/scripts/export_hf_backbone.py")
-            sys.exit(1)
+            # Step 1: Export encoder-decoder ONNX
+            enc_dec_onnx = onnx_dir / "enc_dec.onnx"
+            enc_dec_engine = output_dir / "enc_dec_fp16.engine"
+            print(f"\n=== Step 1: Export encoder-decoder ONNX ===")
+            _run([
+                python, "-m", "sam3.trt.export_enc_dec",
+                "--checkpoint", checkpoint,
+                "--output", str(enc_dec_onnx),
+                "--max-classes", str(args.max_classes),
+                "--imgsz", str(args.imgsz),
+                "--no-validate",
+            ], env_extra=dart_env)
 
-        _run([
-            python, str(hf_script),
-            "--image", str(sample_image),
-            "--imgsz", str(args.imgsz),
-        ], env_extra={"PYTHONIOENCODING": "utf-8"})
+            # Step 2: Build encoder-decoder TRT engine
+            print(f"\n=== Step 2: Build encoder-decoder TRT engine ===")
+            _run([
+                python, "-m", "sam3.trt.build_engine",
+                "--onnx", str(enc_dec_onnx),
+                "--output", str(enc_dec_engine),
+                "--fp16", "--mixed-precision", "none",
+            ], env_extra=dart_env)
+            print(f"  -> {enc_dec_engine} ({enc_dec_engine.stat().st_size / 1e6:.1f} MB)")
 
-        # Move backbone engine to output directory
-        bb_engine_src = Path("hf_backbone_fp16.engine")
-        bb_engine_dst = output_dir / "hf_backbone_fp16.engine"
-        if bb_engine_src.exists() and bb_engine_src != bb_engine_dst:
-            shutil.move(str(bb_engine_src), str(bb_engine_dst))
-        print(f"Backbone engine: {bb_engine_dst} ({bb_engine_dst.stat().st_size / 1e6:.1f} MB)")
+            # Step 3: Export HuggingFace backbone (ONNX + TRT in one step)
+            print(f"\n=== Step 3: Export HuggingFace backbone ===")
+            hf_script = dart_dir / "scripts" / "export_hf_backbone.py"
+            _run([
+                python, str(hf_script),
+                "--image", str(sample_image),
+                "--imgsz", str(args.imgsz),
+            ], env_extra=dart_env, cwd=str(output_dir))
 
-    # Cleanup
-    sample_image.unlink(missing_ok=True)
+            # The HF script writes hf_backbone_fp16.engine in cwd
+            bb_engine = output_dir / "hf_backbone_fp16.engine"
+            if not bb_engine.exists():
+                # Check if it was written in the original cwd
+                alt = Path("hf_backbone_fp16.engine")
+                if alt.exists():
+                    shutil.move(str(alt), str(bb_engine))
+            print(f"  -> {bb_engine} ({bb_engine.stat().st_size / 1e6:.1f} MB)")
+
+    finally:
+        # Cleanup
+        sample_image.unlink(missing_ok=True)
+        if not args.keep_dart:
+            shutil.rmtree(dart_dir, ignore_errors=True)
+            print(f"\nCleaned up DART clone")
+        else:
+            print(f"\nDART clone kept at: {dart_dir}")
+
+    # Clean up ONNX artifacts that may have been written to output_dir
+    for pattern in ["*.onnx", "*.onnx.data", "onnx_hf_backbone"]:
+        for f in output_dir.glob(pattern):
+            if f.is_file():
+                f.unlink()
+            elif f.is_dir():
+                shutil.rmtree(f)
 
     print(f"\n=== Done ===")
     print(f"Engines in: {output_dir}")
     print(f"  {enc_dec_engine.name}")
-    print(f"  {bb_engine_dst.name}")
+    print(f"  {bb_engine.name}")
     print(f"\nUsage: uv run python run_pipeline.py video.mp4 -o output --sam3 trt")
 
 
-def _run(cmd: list, env_extra: dict | None = None) -> None:
+def _run(
+    cmd: list,
+    env_extra: dict | None = None,
+    cwd: str | None = None,
+) -> None:
     """Run a subprocess, raising on failure."""
-    import os
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
     if env_extra:
         env.update(env_extra)
     print(f"  Running: {' '.join(str(c) for c in cmd)}")
-    result = subprocess.run(cmd, env=env)
+    result = subprocess.run(cmd, env=env, cwd=cwd)
     if result.returncode != 0:
         raise RuntimeError(f"Command failed with exit code {result.returncode}")
 

@@ -22,6 +22,7 @@ dependencies = [
     "onnxscript>=0.6.2",
     "onnxslim>=0.1.90",
     "transformers>=5.4.0",
+    "triton-windows>=3.6.0.post26",
 ]
 
 [tool.uv]
