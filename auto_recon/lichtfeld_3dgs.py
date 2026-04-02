@@ -325,6 +325,92 @@ def run_training(
 
 
 # ---------------------------------------------------------------------------
+# Render from trained model
+# ---------------------------------------------------------------------------
+
+def render_cameras(
+    data_dir: str | Path,
+    checkpoint: str | Path,
+    output_dir: str | Path,
+    *,
+    lichtfeld_exe: str | Path | None = None,
+    test_every: int = 1,
+) -> Path:
+    """Render images from all training camera viewpoints.
+
+    Uses a trained checkpoint to render GT-vs-rendered comparison images
+    for every Nth camera (default: all cameras with test_every=1).
+
+    Parameters
+    ----------
+    data_dir:
+        LichtFeld data directory (with images/ and sparse/0/).
+    checkpoint:
+        Path to a ``.resume`` checkpoint file.
+    output_dir:
+        Directory for rendered output.
+    lichtfeld_exe:
+        Path to LichtFeld-Studio executable.
+    test_every:
+        Render every Nth camera (1 = all cameras).
+
+    Returns
+    -------
+    Path
+        Output directory containing rendered images.
+    """
+    data_dir = Path(data_dir).resolve()
+    checkpoint = Path(checkpoint).resolve()
+    output_dir = Path(output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if lichtfeld_exe is None:
+        lichtfeld_exe = DEFAULT_LICHTFELD_EXE
+    lichtfeld_exe = Path(lichtfeld_exe).resolve()
+    if not lichtfeld_exe.is_file():
+        raise FileNotFoundError(f"LichtFeld-Studio not found: {lichtfeld_exe}")
+    if not checkpoint.is_file():
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint}")
+
+    cmd: list[str] = [
+        str(lichtfeld_exe),
+        "--headless",
+        "--train",
+        "-d", str(data_dir),
+        "-o", str(output_dir),
+        "--resume", str(checkpoint),
+        "-i", "0",
+        "--eval",
+        "--save-eval-images",
+        "--test-every", str(test_every),
+    ]
+
+    logger.info("Rendering camera viewpoints from checkpoint: %s", checkpoint)
+    logger.info("Command: %s", " ".join(cmd))
+
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+
+    assert process.stdout is not None
+    for line in process.stdout:
+        line = line.rstrip()
+        if line:
+            logger.info("[LichtFeld] %s", line)
+
+    retcode = process.wait()
+    if retcode != 0:
+        raise RuntimeError(f"LichtFeld-Studio render exited with code {retcode}")
+
+    logger.info("Rendered images saved to: %s", output_dir)
+    return output_dir
+
+
+# ---------------------------------------------------------------------------
 # Full pipeline
 # ---------------------------------------------------------------------------
 

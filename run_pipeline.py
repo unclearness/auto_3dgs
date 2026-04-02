@@ -90,6 +90,7 @@ def run_pipeline(
     sam3_prompt: str = "person",
     sam3_batch_size: int = 4,
     sam3_scale: float = 1.0,
+    render_eval: bool = False,
 ) -> dict[str, Path]:
     """Run the 360° video to Gaussian Splatting pipeline.
 
@@ -314,6 +315,31 @@ def run_pipeline(
 
     logger.info("Stage 3 complete: output in %s", splat_dir)
 
+    # -- Stage 4 (optional): Render camera viewpoints ---------------------------
+    if render_eval:
+        from auto_recon.lichtfeld_3dgs import render_cameras
+
+        logger.info("-" * 40)
+        logger.info("Stage 4: Rendering camera viewpoints")
+        logger.info("-" * 40)
+
+        # Find the checkpoint and data dir from Stage 3
+        checkpoint_dir = splat_dir / "checkpoints"
+        checkpoints = sorted(checkpoint_dir.glob("*.resume")) if checkpoint_dir.is_dir() else []
+        lf_data_dir = splat_dir / "lichtfeld_data"
+
+        if checkpoints and lf_data_dir.is_dir():
+            render_dir = output_dir / "04_renders"
+            render_cameras(
+                data_dir=lf_data_dir,
+                checkpoint=checkpoints[-1],
+                output_dir=render_dir,
+                lichtfeld_exe=lichtfeld_exe,
+            )
+            logger.info("Stage 4 complete: renders in %s", render_dir)
+        else:
+            logger.warning("Stage 4 skipped: checkpoint or data dir not found")
+
     # -- Summary ---------------------------------------------------------------
     logger.info("=" * 60)
     logger.info("Pipeline complete!")
@@ -371,6 +397,8 @@ def main() -> None:
                         help="SAM3 batch size for pinhole mode (default: 4)")
     parser.add_argument("--sam3-scale", type=float, default=1.0,
                         help="SAM3 input scale factor, e.g. 0.5 = half resolution (default: 1.0)")
+    parser.add_argument("--render", action="store_true",
+                        help="Render camera viewpoints after training (Stage 4)")
 
     args = parser.parse_args()
 
@@ -392,6 +420,7 @@ def main() -> None:
         sam3_prompt=args.sam3_prompt,
         sam3_batch_size=args.sam3_batch,
         sam3_scale=args.sam3_scale,
+        render_eval=args.render,
     )
 
     print(f"\nDone! Output in: {result['splat_dir']}")
