@@ -218,6 +218,11 @@ def convert_equirect_to_perspectives(
         "# POINTS2D[] as (X, Y, POINT3D_ID)",
     ]
 
+    # Pre-compute remap maps for all yaw/pitch combinations (cached across
+    # frames).  Avoids recomputing the map for every frame × view.
+    view_grid = [(pitch, yaw) for pitch in pitch_angles for yaw in yaw_angles]
+    remap_cache: dict[tuple[float, float], tuple[np.ndarray, np.ndarray]] | None = None
+
     new_img_id = 1
     for orig_img in orig_images:
         name = orig_img["name"]
@@ -233,6 +238,35 @@ def convert_equirect_to_perspectives(
         if equirect is None:
             logger.warning("Cannot read: %s, skipping", eq_path)
             continue
+
+        # Build remap cache on first frame
+        eq_h_cur, eq_w_cur = equirect.shape[:2]
+        if remap_cache is None:
+            logger.info("Building remap cache (%dx%d, %d views)...", eq_w_cur, eq_h_cur, len(view_grid))
+            remap_cache = {}
+            for pitch, yaw in view_grid:
+                fov = np.radians(fov_deg)
+                _f = out_w / (2.0 * np.tan(fov / 2.0))
+                _cx, _cy = out_w / 2.0, out_h / 2.0
+                u = np.arange(out_w, dtype=np.float64) - _cx
+                v = np.arange(out_h, dtype=np.float64) - _cy
+                uu, vv = np.meshgrid(u, v)
+                x, y, z = uu, vv, np.full_like(uu, _f)
+                _yaw, _pitch = np.radians(yaw), np.radians(pitch)
+                cos_p, sin_p = np.cos(_pitch), np.sin(_pitch)
+                cos_y, sin_y = np.cos(_yaw), np.sin(_yaw)
+                y1 = y * cos_p - z * sin_p
+                z1 = y * sin_p + z * cos_p
+                x2 = x * cos_y + z1 * sin_y
+                z2 = -x * sin_y + z1 * cos_y
+                y2 = y1
+                norm = np.sqrt(x2**2 + y2**2 + z2**2)
+                theta = np.arctan2(x2, z2)
+                phi = np.arcsin(np.clip(y2 / norm, -1, 1))
+                src_x = ((theta / np.pi + 1.0) / 2.0 * eq_w_cur).astype(np.float32) % eq_w_cur
+                src_y = ((phi / (np.pi / 2.0) + 1.0) / 2.0 * eq_h_cur).astype(np.float32)
+                remap_cache[(pitch, yaw)] = (src_x, src_y)
+            logger.info("Remap cache built")
 
         # Load equirectangular mask if available
         eq_mask = None
@@ -250,49 +284,49 @@ def convert_equirect_to_perspectives(
 
         stem = Path(name).stem
 
-        for pitch in pitch_angles:
-            for yaw in yaw_angles:
-                # Generate perspective view
-                persp = _equirect_to_perspective(
-                    equirect, fov_deg, out_size, yaw, pitch
+        for pitch, yaw in view_grid:
+            # Remap using cached maps
+            src_x, src_y = remap_cache[(pitch, yaw)]
+            persp = cv2.remap(
+                equirect, src_x, src_y,
+                interpolation=cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_WRAP,
+            )
+
+            out_name = f"{stem}_p{pitch:+.0f}_y{yaw:.0f}.jpg"
+            cv2.imwrite(
+                str(out_images_dir / out_name), persp,
+                [cv2.IMWRITE_JPEG_QUALITY, 95],
+            )
+
+            # Remap mask directly (grayscale, nearest neighbor)
+            if eq_mask is not None and out_masks_dir is not None:
+                persp_mask = cv2.remap(
+                    eq_mask, src_x, src_y,
+                    interpolation=cv2.INTER_NEAREST,
+                    borderMode=cv2.BORDER_CONSTANT,
+                    borderValue=0,
                 )
+                mask_out_name = f"{stem}_p{pitch:+.0f}_y{yaw:.0f}.png"
+                cv2.imwrite(str(out_masks_dir / mask_out_name), persp_mask)
 
-                # Output filename
-                out_name = f"{stem}_p{pitch:+.0f}_y{yaw:.0f}.jpg"
-                cv2.imwrite(
-                    str(out_images_dir / out_name), persp,
-                    [cv2.IMWRITE_JPEG_QUALITY, 95],
+            if has_sparse:
+                # Compute combined world-to-camera rotation for this sub-view.
+                R_extract = _yaw_pitch_to_extract_matrix(yaw, pitch)
+                R_sub = R_extract.T
+                R_combined = R_sub @ R_orig
+                t_combined = R_sub @ t_orig
+
+                qw_c, qx_c, qy_c, qz_c = _rotation_matrix_to_quaternion(R_combined)
+
+                img_lines.append(
+                    f"{new_img_id} {qw_c:.10f} {qx_c:.10f} {qy_c:.10f} {qz_c:.10f} "
+                    f"{t_combined[0]:.10f} {t_combined[1]:.10f} {t_combined[2]:.10f} "
+                    f"1 {out_name}"
                 )
+                img_lines.append("")  # empty POINTS2D
 
-                # Convert mask to perspective if available
-                if eq_mask is not None and out_masks_dir is not None:
-                    persp_mask = _equirect_to_perspective(
-                        cv2.cvtColor(eq_mask, cv2.COLOR_GRAY2BGR),
-                        fov_deg, out_size, yaw, pitch,
-                    )
-                    # Use nearest-neighbor threshold to keep mask binary
-                    persp_mask_gray = cv2.cvtColor(persp_mask, cv2.COLOR_BGR2GRAY)
-                    _, persp_mask_bin = cv2.threshold(persp_mask_gray, 127, 255, cv2.THRESH_BINARY)
-                    mask_out_name = f"{stem}_p{pitch:+.0f}_y{yaw:.0f}.png"
-                    cv2.imwrite(str(out_masks_dir / mask_out_name), persp_mask_bin)
-
-                if has_sparse:
-                    # Compute combined world-to-camera rotation for this sub-view.
-                    R_extract = _yaw_pitch_to_extract_matrix(yaw, pitch)
-                    R_sub = R_extract.T
-                    R_combined = R_sub @ R_orig
-                    t_combined = R_sub @ t_orig
-
-                    qw_c, qx_c, qy_c, qz_c = _rotation_matrix_to_quaternion(R_combined)
-
-                    img_lines.append(
-                        f"{new_img_id} {qw_c:.10f} {qx_c:.10f} {qy_c:.10f} {qz_c:.10f} "
-                        f"{t_combined[0]:.10f} {t_combined[1]:.10f} {t_combined[2]:.10f} "
-                        f"1 {out_name}"
-                    )
-                    img_lines.append("")  # empty POINTS2D
-
-                new_img_id += 1
+            new_img_id += 1
 
     # Write COLMAP files only when we have camera poses (Metashape path)
     if has_sparse:

@@ -109,12 +109,17 @@ def extract_frames(
 # ---------------------------------------------------------------------------
 
 
-def _laplacian_variance(image_path: str | Path) -> float:
-    """Return the Laplacian variance of a grayscale image (higher = sharper)."""
-    img = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
+def _laplacian_variance(image_path: str | Path) -> tuple[str, float]:
+    """Return (filename, Laplacian variance) of a grayscale image (higher = sharper).
+
+    Returns a tuple for multiprocessing compatibility (Path objects can't
+    be pickled across processes on Windows).
+    """
+    path = str(image_path)
+    img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
     if img is None:
-        return 0.0
-    return float(cv2.Laplacian(img, cv2.CV_64F).var())
+        return (path, 0.0)
+    return (path, float(cv2.Laplacian(img, cv2.CV_64F).var()))
 
 
 def select_sharp_frames(
@@ -122,20 +127,42 @@ def select_sharp_frames(
     threshold: float = 100.0,
     min_keep_ratio: float = 0.25,
     logger: logging.Logger | None = None,
+    num_workers: int = 0,
 ) -> list[Path]:
     """Return frames whose Laplacian-variance sharpness exceeds *threshold*.
 
     If fewer than ``min_keep_ratio * len(frame_paths)`` frames pass, the
     threshold is automatically lowered to retain at least that fraction
     (sorted by sharpness descending).
+
+    Parameters
+    ----------
+    num_workers:
+        Number of parallel workers for sharpness evaluation.
+        0 = auto (cpu_count), 1 = sequential (no multiprocessing).
     """
     logger = logger or logging.getLogger("auto_recon.preprocessing")
 
-    scores: list[tuple[Path, float]] = []
-    for p in frame_paths:
-        s = _laplacian_variance(p)
-        scores.append((p, s))
-        logger.debug("Sharpness %s: %.2f", p.name, s)
+    if num_workers == 0:
+        import os
+        num_workers = min(os.cpu_count() or 1, len(frame_paths))
+
+    str_paths = [str(p) for p in frame_paths]
+
+    if num_workers > 1 and len(frame_paths) > 4:
+        from multiprocessing import Pool
+        logger.info("Evaluating sharpness with %d workers (%d frames)", num_workers, len(frame_paths))
+        with Pool(num_workers) as pool:
+            results = pool.map(_laplacian_variance, str_paths)
+        scores = [(Path(p), s) for p, s in results]
+        for p, s in scores:
+            logger.debug("Sharpness %s: %.2f", p.name, s)
+    else:
+        scores = []
+        for p in frame_paths:
+            _, s = _laplacian_variance(str(p))
+            scores.append((p, s))
+            logger.debug("Sharpness %s: %.2f", p.name, s)
 
     # Sort descending by sharpness
     scores.sort(key=lambda x: x[1], reverse=True)
