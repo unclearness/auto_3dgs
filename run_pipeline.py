@@ -311,34 +311,11 @@ def run_pipeline(
         ppisp=ppisp,
         mask_mode="ignore" if masks_dir else None,
         init_path=init_ply if init_ply and Path(init_ply).exists() else None,
+        eval_images=render_eval,
+        test_every=8,
     )
 
     logger.info("Stage 3 complete: output in %s", splat_dir)
-
-    # -- Stage 4 (optional): Render camera viewpoints ---------------------------
-    if render_eval:
-        from auto_recon.lichtfeld_3dgs import render_cameras
-
-        logger.info("-" * 40)
-        logger.info("Stage 4: Rendering camera viewpoints")
-        logger.info("-" * 40)
-
-        # Find the checkpoint and data dir from Stage 3
-        checkpoint_dir = splat_dir / "checkpoints"
-        checkpoints = sorted(checkpoint_dir.glob("*.resume")) if checkpoint_dir.is_dir() else []
-        lf_data_dir = splat_dir / "lichtfeld_data"
-
-        if checkpoints and lf_data_dir.is_dir():
-            render_dir = output_dir / "04_renders"
-            render_cameras(
-                data_dir=lf_data_dir,
-                checkpoint=checkpoints[-1],
-                output_dir=render_dir,
-                lichtfeld_exe=lichtfeld_exe,
-            )
-            logger.info("Stage 4 complete: renders in %s", render_dir)
-        else:
-            logger.warning("Stage 4 skipped: checkpoint or data dir not found")
 
     # -- Summary ---------------------------------------------------------------
     logger.info("=" * 60)

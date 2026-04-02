@@ -194,6 +194,8 @@ def run_training(
     undistort: bool = False,
     init_path: str | Path | None = None,
     ppisp: bool = True,
+    eval_images: bool = False,
+    test_every: int = 8,
     extra_args: list[str] | None = None,
 ) -> Path:
     """Run LichtFeld Studio 3DGS training.
@@ -287,6 +289,8 @@ def run_training(
         cmd.append("--undistort")
     if ppisp:
         cmd.append("--ppisp")
+    if eval_images:
+        cmd += ["--eval", "--save-eval-images", "--test-every", str(test_every)]
     if init_path is not None:
         cmd += ["--init", str(Path(init_path).resolve())]
     if extra_args:
@@ -433,6 +437,8 @@ def run_lichtfeld_pipeline(
     undistort: bool = False,
     init_path: str | Path | None = None,
     ppisp: bool = True,
+    eval_images: bool = False,
+    test_every: int = 8,
     extra_args: list[str] | None = None,
 ) -> Path:
     """Run the full LichtFeld 3DGS pipeline: prepare data then train.
@@ -477,6 +483,8 @@ def run_lichtfeld_pipeline(
         undistort=undistort,
         init_path=init_path,
         ppisp=ppisp,
+        eval_images=eval_images,
+        test_every=test_every,
         extra_args=extra_args,
     )
 
