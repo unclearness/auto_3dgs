@@ -144,16 +144,19 @@ def select_sharp_frames(
     logger = logger or logging.getLogger("auto_recon.preprocessing")
 
     if num_workers == 0:
-        import os
-        num_workers = min(os.cpu_count() or 1, len(frame_paths))
+        import os, sys
+        cpu = os.cpu_count() or 1
+        if sys.platform == "win32":
+            cpu = min(cpu, 32)
+        num_workers = min(cpu, len(frame_paths))
 
     str_paths = [str(p) for p in frame_paths]
 
     if num_workers > 1 and len(frame_paths) > 4:
-        from multiprocessing import Pool
-        logger.info("Evaluating sharpness with %d workers (%d frames)", num_workers, len(frame_paths))
-        with Pool(num_workers) as pool:
-            results = pool.map(_laplacian_variance, str_paths)
+        from concurrent.futures import ThreadPoolExecutor
+        logger.info("Evaluating sharpness with %d threads (%d frames)", num_workers, len(frame_paths))
+        with ThreadPoolExecutor(max_workers=num_workers) as pool:
+            results = list(pool.map(_laplacian_variance, str_paths))
         scores = [(Path(p), s) for p, s in results]
         for p, s in scores:
             logger.debug("Sharpness %s: %.2f", p.name, s)
